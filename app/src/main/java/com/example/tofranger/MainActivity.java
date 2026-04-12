@@ -47,16 +47,22 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Sensor
     private SensorManager sensorManager;
     private Sensor tofSensor;
+    private Sensor accelSensor;
+    private Sensor gyroSensor;
     private boolean isProximityFallback = false;
+
+    // Tilt compensation
+    private TiltCompensator tilt = new TiltCompensator();
 
     // UI
     private TextView tvDistance, tvUnit, tvRawInfo, tvStatus;
     private TextView tvStats, tvHz, tvHoldLabel, tvHistoryCount, tvSensorInfo;
     private TextView tvQuality, tvTrend, tvMultiTarget;
     private TextView tvConfidenceBar;
+    private TextView tvPitch, tvHorizontal, tvVertical, tvTiltInfo;
 
     // Buttons
-    private View btnHold, btnReset, btnUnit, btnClearStats;
+    private View btnHold, btnReset, btnUnit, btnClearStats, btnCalibrate;
 
     // Colors
     private static final int C_BG = 0xFF0A0A1A;
@@ -204,6 +210,50 @@ public class MainActivity extends Activity implements SensorEventListener {
         root.addView(mtCard);
         root.addView(makeGap(dp(12)));
 
+        // === Tilt Compensation Card ===
+        LinearLayout tiltCard = makeCard();
+        tiltCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+
+        LinearLayout tiltHeader = new LinearLayout(this);
+        tiltHeader.setOrientation(LinearLayout.HORIZONTAL);
+        tiltHeader.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tiltTitle = new TextView(this);
+        tiltTitle.setText("🧭 倾斜补偿");
+        tiltTitle.setTextSize(14);
+        tiltTitle.setTextColor(C_TEXT);
+        tiltTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        tiltHeader.addView(tiltTitle);
+
+        tiltCard.addView(tiltHeader);
+
+        tvPitch = new TextView(this);
+        tvPitch.setTextSize(13);
+        tvPitch.setTextColor(C_TEXT);
+        tvPitch.setPadding(0, dp(6), 0, 0);
+        tiltCard.addView(tvPitch);
+
+        tvHorizontal = new TextView(this);
+        tvHorizontal.setTextSize(13);
+        tvHorizontal.setTextColor(C_ACCENT);
+        tvHorizontal.setPadding(0, dp(2), 0, 0);
+        tiltCard.addView(tvHorizontal);
+
+        tvVertical = new TextView(this);
+        tvVertical.setTextSize(13);
+        tvVertical.setTextColor(C_WARN);
+        tvVertical.setPadding(0, dp(2), 0, 0);
+        tiltCard.addView(tvVertical);
+
+        tvTiltInfo = new TextView(this);
+        tvTiltInfo.setTextSize(11);
+        tvTiltInfo.setTextColor(C_DIM);
+        tvTiltInfo.setPadding(0, dp(4), 0, 0);
+        tiltCard.addView(tvTiltInfo);
+
+        root.addView(tiltCard);
+        root.addView(makeGap(dp(12)));
+
         // === Stats Card ===
         LinearLayout statsCard = makeCard();
         statsCard.setPadding(dp(16), dp(14), dp(16), dp(14));
@@ -245,6 +295,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         btnReset = makeButton("🔄 重置", 0xFF3B82F6);
         btnUnit = makeButton("📏 单位", 0xFF8B5CF6);
         btnClearStats = makeButton("🗑 清除", 0xFF64748B);
+        btnCalibrate = makeButton("🧭 校准", 0xFF059669);
 
         btnRow.addView(btnHold, lp(0, dp(42), 1));
         btnRow.addView(makeGap(dp(8)), lp(dp(8), 0, 0));
@@ -259,6 +310,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         btnRow2.setOrientation(LinearLayout.HORIZONTAL);
         btnRow2.setGravity(Gravity.CENTER);
         btnRow2.addView(btnClearStats, lp(0, dp(42), 1));
+        btnRow2.addView(makeGap(dp(8)), lp(dp(8), 0, 0));
+        btnRow2.addView(btnCalibrate, lp(0, dp(42), 1));
         root.addView(btnRow2);
         root.addView(makeGap(dp(12)));
 
@@ -308,10 +361,12 @@ public class MainActivity extends Activity implements SensorEventListener {
         btnReset.setOnClickListener(v -> resetAll());
         btnUnit.setOnClickListener(v -> cycleUnit());
         btnClearStats.setOnClickListener(v -> clearHistory());
+        btnCalibrate.setOnClickListener(v -> calibrateTilt());
 
         // Sensor init
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         findTofSensor();
+        findImuSensors();
     }
 
     private void findTofSensor() {
@@ -342,11 +397,24 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvSensorInfo.setText(sensorName);
     }
 
+    private void findImuSensors() {
+        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         if (tofSensor != null) {
             sensorManager.registerListener(this, tofSensor,
+                    SensorManager.SENSOR_DELAY_GAME);
+        }
+        if (accelSensor != null) {
+            sensorManager.registerListener(this, accelSensor,
+                    SensorManager.SENSOR_DELAY_GAME);
+        }
+        if (gyroSensor != null) {
+            sensorManager.registerListener(this, gyroSensor,
                     SensorManager.SENSOR_DELAY_GAME);
         }
     }
@@ -360,6 +428,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override
     public void onSensorChanged(SensorEvent event) {
         int type = event.sensor.getType();
+
+        // Handle IMU sensors
+        if (type == Sensor.TYPE_ACCELEROMETER) {
+            tilt.updateAccelerometer(event);
+            return;
+        }
+        if (type == Sensor.TYPE_GYROSCOPE) {
+            tilt.updateGyroscope(event);
+            return;
+        }
+
         if (type != SENSOR_TYPE_TOF && type != Sensor.TYPE_PROXIMITY) return;
         if (isHolding) return;
 
@@ -522,6 +601,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                     Math.max(0, stats.getMin()), stats.getMax()));
             tvStatus.setTextColor(C_DIM);
         }
+
+        // --- Tilt compensation ---
+        updateTiltDisplay(filtered);
     }
 
     private void updateStatsText() {
@@ -588,6 +670,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         stats.reset();
         primaryFilter.reset();
         for (DistanceFilter f : targetFilters) f.reset();
+        tilt.reset();
         eventCount = 0;
         lastFiltered = -1;
         rawHistory.clear();
@@ -610,6 +693,61 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+
+    // ========== Tilt Compensation ==========
+
+    private void updateTiltDisplay(float slantDist) {
+        float pitchDeg = tilt.getPitchDegrees();
+        String u = UNIT_LABELS[currentUnit];
+
+        // Pitch angle
+        tvPitch.setText(String.format(Locale.getDefault(),
+                "倾斜角: %.1f° (%s)%s",
+                pitchDeg,
+                tilt.getTiltQuality(),
+                tilt.isCalibrated() ? " ✓ 已校准" : ""));
+
+        if (slantDist > 0) {
+            float hDist = tilt.getHorizontalDistance(slantDist);
+            float vDist = tilt.getVerticalHeight(slantDist);
+
+            tvHorizontal.setText(String.format(Locale.getDefault(),
+                    "↔ 水平距离: %s %s",
+                    fmt(convertUnit(hDist, currentUnit), currentUnit), u));
+
+            tvVertical.setText(String.format(Locale.getDefault(),
+                    "↕ 垂直高度: %s %s",
+                    fmt(convertUnit(Math.abs(vDist), currentUnit), currentUnit), u));
+        } else {
+            tvHorizontal.setText("↔ 水平距离: --");
+            tvVertical.setText("↕ 垂直高度: --");
+        }
+
+        // Help text
+        if (!tilt.isCalibrated()) {
+            tvTiltInfo.setText("💡 持平手机后点「校准」获得水平基准");
+        } else if (Math.abs(pitchDeg) < 5) {
+            tvTiltInfo.setText("📏 当前近乎水平，直接读数即水平距离");
+        } else if (pitchDeg > 45) {
+            tvTiltInfo.setText("📐 指向上方 — ↕ 值可用于测高度");
+        } else {
+            tvTiltInfo.setText("📐 倾斜测量 — 水平/垂直值已自动换算");
+        }
+    }
+
+    private void calibrateTilt() {
+        tilt.calibrate();
+        // Flash feedback
+        TextView tv = (TextView) btnCalibrate;
+        tv.setText("✓ 已校准");
+        tv.setTextColor(C_GOOD);
+        setBackgroundTint(btnCalibrate, C_GOOD);
+        tv.postDelayed(() -> {
+            tv.setText("🧭 重校准");
+            tv.setTextColor(Color.WHITE);
+            setBackgroundTint(btnCalibrate, 0xFF059669);
+        }, 1500);
+    }
 
     // ========== UI Helpers ==========
 
