@@ -31,11 +31,13 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -873,16 +875,16 @@ public class MainActivity extends Activity implements SensorEventListener {
         try {
             OutputStream os = getContentResolver().openOutputStream(uri);
             if (os == null) return;
-            FileWriter fw = new FileWriter(os.getFD());
-            fw.write("timestamp,distance_mm\n");
+            BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(os));
+            bw.write("timestamp,distance_mm\n");
             if (!continuousRecords.isEmpty()) {
                 SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
                 for (MeasurementRecord rec : continuousRecords) {
-                    fw.write(String.format(Locale.getDefault(), "%s,%.1f\n",
+                    bw.write(String.format(Locale.getDefault(), "%s,%.1f\n",
                             sdf.format(new Date(rec.timestamp)), rec.distanceMm));
                 }
             }
-            fw.close();
+            bw.close();
             vibrate(100);
         } catch (IOException ignored) {}
     }
