@@ -35,7 +35,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private boolean isHolding = false;
 
     // Signal processing
-    private DistanceFilter primaryFilter = new DistanceFilter(7, 0.20f, 600f);
+    private DistanceFilter primaryFilter = new DistanceFilter(11, 0.08f, 150f);
     private DistanceFilter[] targetFilters;
     private static final int MAX_TARGETS = 4;
 
@@ -506,8 +506,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvHoldLabel.setTextColor(isHolding ? C_WARN : C_ACCENT);
         tvHoldLabel.setText(isHolding ? "● 已暂停" : "● 测量中");
 
-        // Display filtered value
-        float displayVal = convertUnit(filtered, currentUnit);
+        // Display filtered value (round to nearest 5mm for smoother display)
+        float rounded = Math.round(filtered / 5f) * 5f;
+        float displayVal = convertUnit(rounded, currentUnit);
         String valStr = fmt(displayVal, currentUnit);
         tvDistance.setText(valStr);
         tvUnit.setText(" " + UNIT_LABELS[currentUnit]);

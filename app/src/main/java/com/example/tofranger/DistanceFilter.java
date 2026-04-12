@@ -3,37 +3,55 @@ package com.example.tofranger;
 import java.util.Arrays;
 
 /**
- * Two-stage signal processing for dToF distance data.
- *   raw → MovingMedian (outlier rejection) → EMA (smoothing) → output
+ * Multi-stage signal processing for dToF distance data.
+ *
+ * Pipeline:
+ *   raw → spike reject → trimmed median → dead zone → EMA(x2) → output
+ *
+ * - Spike rejection: throws away jumps larger than maxJump
+ * - Trimmed median: sorts window, averages middle 50% (more stable than plain median)
+ * - Dead zone: ignores changes smaller than deadZoneMm (reduces micro-jitter)
+ * - Double EMA: two passes of exponential smoothing for extra smoothness
  */
 public class DistanceFilter {
 
     private final int[] medianBuffer;
+    private final int windowSize;
     private int medianPos = 0;
     private boolean medianFilled = false;
 
-    private float emaValue = 0;
+    // Double EMA
+    private float ema1 = 0, ema2 = 0;
     private boolean emaInitialized = false;
     private float alpha;
 
-    private float lastValid = -1;
+    private float lastFiltered = -1;
     private float maxJumpMm;
+    private float deadZoneMm;
 
     /**
-     * @param windowSize  median window (5-9 recommended, must be odd)
-     * @param alpha       EMA smoothing factor (0.15-0.35 recommended)
-     * @param maxJumpMm   max allowed single-sample jump in mm
+     * @param windowSize   median window (9-15 recommended)
+     * @param alpha        EMA smoothing factor (0.05-0.12 recommended, lower=smoother)
+     * @param maxJumpMm    max allowed jump per sample in mm
+     * @param deadZoneMm   ignore changes smaller than this (mm), 0 = disabled
      */
-    public DistanceFilter(int windowSize, float alpha, float maxJumpMm) {
+    public DistanceFilter(int windowSize, float alpha, float maxJumpMm, float deadZoneMm) {
+        this.windowSize = windowSize;
         this.medianBuffer = new int[windowSize];
         this.alpha = alpha;
         this.maxJumpMm = maxJumpMm;
+        this.deadZoneMm = deadZoneMm;
         Arrays.fill(medianBuffer, -1);
     }
 
-    /** Default: window=5, alpha=0.25, maxJump=800mm */
+    /** Convenience: no dead zone */
+    public DistanceFilter(int windowSize, float alpha, float maxJumpMm) {
+        this(windowSize, alpha, maxJumpMm, 2f);
+    }
+
+    /** Default: window=11, alpha=0.08, maxJump=150mm, deadZone=2mm */
     public DistanceFilter() {
-        this(5, 0.25f, 800f);
+        this(11, 0.08f, 150f, 2f);
     }
 
     /**
@@ -44,65 +62,96 @@ public class DistanceFilter {
 
         int rawInt = Math.round(rawMm);
 
-        // Stage 1: Moving Median
+        // Stage 1: Fill median buffer
         medianBuffer[medianPos] = rawInt;
-        medianPos = (medianPos + 1) % medianBuffer.length;
+        medianPos = (medianPos + 1) % windowSize;
         if (medianPos == 0) medianFilled = true;
 
-        int count = medianFilled ? medianBuffer.length : medianPos;
+        int count = medianFilled ? windowSize : medianPos;
         if (count < 3) {
-            lastValid = rawMm;
+            lastFiltered = rawMm;
             return initEma(rawMm);
         }
 
+        // Stage 2: Spike rejection — if raw jumps too much, reject it
+        if (lastFiltered > 0 && maxJumpMm > 0) {
+            if (Math.abs(rawMm - lastFiltered) > maxJumpMm) {
+                // Spike detected — keep current output
+                return emaInitialized ? ema2 : lastFiltered;
+            }
+        }
+
+        // Stage 3: Trimmed median — sort, take middle 50%, average them
         int[] sorted = new int[count];
         System.arraycopy(medianBuffer, 0, sorted, 0, count);
         Arrays.sort(sorted);
-        float median = sorted[count / 2];
 
-        // Stage 2: Spike detection
-        if (lastValid > 0 && maxJumpMm > 0) {
-            if (Math.abs(median - lastValid) > maxJumpMm) {
-                return emaInitialized ? emaValue : lastValid;
+        int q1 = count / 4;
+        int q3 = (count * 3) / 4;
+        if (q3 <= q1) q3 = q1 + 1;
+
+        float sum = 0;
+        int trimCount = 0;
+        for (int i = q1; i < q3; i++) {
+            sum += sorted[i];
+            trimCount++;
+        }
+        float trimmed = sum / trimCount;
+
+        // Stage 4: Dead zone — ignore tiny changes from current output
+        if (deadZoneMm > 0 && emaInitialized) {
+            if (Math.abs(trimmed - ema2) < deadZoneMm) {
+                return ema2; // within dead zone, don't update
             }
         }
-        lastValid = median;
 
-        return applyEma(median);
+        lastFiltered = trimmed;
+
+        // Stage 5: Double EMA
+        return applyDoubleEma(trimmed);
     }
 
     private float initEma(float value) {
         if (!emaInitialized) {
-            emaValue = value;
+            ema1 = value;
+            ema2 = value;
             emaInitialized = true;
         }
-        return emaValue;
+        return ema2;
     }
 
-    private float applyEma(float value) {
+    private float applyDoubleEma(float value) {
         if (!emaInitialized) {
-            emaValue = value;
+            ema1 = value;
+            ema2 = value;
             emaInitialized = true;
         } else {
-            emaValue = alpha * value + (1 - alpha) * emaValue;
+            ema1 = alpha * value + (1 - alpha) * ema1;
+            ema2 = alpha * ema1 + (1 - alpha) * ema2;
         }
-        return emaValue;
+        return ema2;
     }
 
     public void setAlpha(float alpha) {
-        this.alpha = Math.max(0.05f, Math.min(0.95f, alpha));
+        this.alpha = Math.max(0.02f, Math.min(0.95f, alpha));
+    }
+
+    public void setDeadZone(float deadZoneMm) {
+        this.deadZoneMm = deadZoneMm;
     }
 
     public void reset() {
         medianPos = 0;
         medianFilled = false;
         emaInitialized = false;
-        lastValid = -1;
+        lastFiltered = -1;
+        ema1 = 0;
+        ema2 = 0;
         Arrays.fill(medianBuffer, -1);
     }
 
     public float getCurrentValue() {
-        return emaValue;
+        return ema2;
     }
 
     public boolean isWarmedUp() {
