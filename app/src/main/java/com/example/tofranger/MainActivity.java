@@ -23,6 +23,7 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -989,6 +990,17 @@ public class MainActivity extends Activity implements SensorEventListener {
             Vibrator v = vibrator;
             v.vibrate(ms);
         }
+    }
+
+    // ========== 音量键锁定 ==========
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            captureMeasurement();
+            return true; // 消费事件，阻止系统音量调节
+        }
+        return super.onKeyDown(keyCode, event);
     }
 
     // ========== Helpers ==========
