@@ -18,7 +18,6 @@ import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
-import android.speech.tts.TextToSpeech;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -32,14 +31,12 @@ import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 
-public class MainActivity extends Activity implements SensorEventListener, TextToSpeech.OnInitListener {
+public class MainActivity extends Activity implements SensorEventListener {
 
     private static final int SENSOR_TYPE_TOF = 33171040;
 
@@ -51,80 +48,57 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
     // State
     private boolean isHolding = false;
 
-    // Signal processing
-    private DistanceFilter primaryFilter = new DistanceFilter(11, 0.08f, 300f, 2f, 4000f);
-    private DistanceFilter[] targetFilters;
-    private static final int MAX_TARGETS = 4;
+    // Signal processing — 轻量滤波，减少滞后
+    private DistanceFilter primaryFilter = new DistanceFilter(5, 0.4f, 800f, 4000f);
 
-    // Statistics
-    private DistanceStats stats = new DistanceStats(200);
-    private final Deque<Float> rawHistory = new ArrayDeque<>();
-    private static final int MAX_HISTORY = 500;
+    // Statistics (sliding window)
+    private DistanceStats stats = new DistanceStats(100);
 
     // Sensor
     private SensorManager sensorManager;
     private Sensor tofSensor;
-    private Sensor accelSensor;
-    private Sensor gyroSensor;
     private boolean isProximityFallback = false;
-
-    // Tilt compensation
-    private TiltCompensator tilt = new TiltCompensator();
+    private float sensorMaxRange = 4000f; // mm, 从传感器API获取
+    private float sensorResolution = 1f;  // mm
+    private boolean sensorValuesInMm = true; // 自动检测
 
     // Shake detection
     private ShakeDetector shakeDetector = new ShakeDetector();
     private boolean displayFrozen = false;
 
-    // Auto-calibration
-    private boolean autoCalDone = false;
-    private long startTime = 0;
-    private static final long AUTO_CAL_DURATION_MS = 3000;
-    private float calSum = 0;
-    private int calCount = 0;
-    private float sensorOffset = 0;
+    // Warm-up
+    private int warmUpCount = 0;
+    private static final int WARM_UP_SAMPLES = 3;
 
-    // Photo measurement
+    // Lock
     private float lockedDistance = -1;
     private boolean isLocked = false;
 
-    // Area measurement
-    private boolean areaMode = false;
-    private float areaDist1 = -1, areaDist2 = -1;
-
-    // Continuous measurement
+    // Continuous
     private boolean continuousMode = false;
     private final ArrayList<MeasurementRecord> continuousRecords = new ArrayList<>();
     private float lastStableValue = -1;
     private long lastStableTime = 0;
-    private static final long STABLE_THRESHOLD_MS = 1500; // must be stable for 1.5s
-    private static final float STABLE_RANGE_MM = 15; // within 15mm = stable
-
-    // TTS
-    private TextToSpeech tts;
-    private boolean ttsReady = false;
-    private boolean ttsEnabled = false;
+    private static final long STABLE_THRESHOLD_MS = 1500;
+    private static final float STABLE_RANGE_MM = 10;
 
     // Vibration
     private Vibrator vibrator;
 
-    // History chart
-    private DistanceChartView chartView;
-
     // UI
     private TextView tvDistance, tvUnit, tvRawInfo, tvStatus;
-    private TextView tvStats, tvHz, tvHoldLabel, tvHistoryCount, tvSensorInfo;
-    private TextView tvQuality, tvTrend, tvMultiTarget;
-    private TextView tvConfidenceBar;
-    private TextView tvPitch, tvHorizontal, tvVertical, tvTiltInfo;
-    private TextView tvShakeStatus, tvAutoCal, tvLockedInfo;
-    private TextView tvAreaResult, tvContinuousInfo;
+    private TextView tvStats, tvHz, tvHoldLabel, tvSensorInfo;
+    private TextView tvQuality, tvConfidenceBar;
+    private TextView tvLockedInfo;
+    private TextView tvContinuousInfo;
+    private TextView tvSensorDebug; // 传感器诊断
 
     // Buttons
-    private View btnHold, btnReset, btnUnit, btnClearStats, btnCalibrate;
-    private View btnCapture, btnArea, btnContinuous, btnTTS, btnExportCSV;
+    private View btnHold, btnReset, btnUnit;
+    private View btnCapture, btnContinuous, btnExportCSV;
 
-    // Card refs for show/hide
-    private LinearLayout cardMultiTarget, cardTilt, cardArea, cardContinuous;
+    // Cards
+    private LinearLayout cardContinuous;
 
     // Colors
     private static final int C_BG = 0xFF0A0A1A;
@@ -139,29 +113,24 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
     private static final int C_FAIR = 0xFFFFB800;
     private static final int C_POOR = 0xFFFF4466;
     private static final int C_BLUE = 0xFF3B82F6;
-    private static final int C_PURPLE = 0xFF8B5CF6;
     private static final int C_GREEN = 0xFF059669;
     private static final int C_ORANGE = 0xFFF97316;
 
     private long lastUiUpdate = 0;
     private int eventCount = 0;
     private float lastFiltered = -1;
+    private float lastRawMm = -1;
 
-    // Multi-target
-    private float[] lastTargetDists = new float[MAX_TARGETS];
+    // 自动检测：记录原始值范围
+    private float observedMin = Float.MAX_VALUE;
+    private float observedMax = 0;
+    private int detectCount = 0;
+    private boolean unitDetected = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().getDecorView().setBackgroundColor(C_BG);
-
-        startTime = System.currentTimeMillis();
-
-        // Init filters
-        targetFilters = new DistanceFilter[MAX_TARGETS];
-        for (int i = 0; i < MAX_TARGETS; i++) {
-            targetFilters[i] = new DistanceFilter(5, 0.30f, 1000f, 2f, 4000f);
-        }
 
         // Init vibrator
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -171,16 +140,13 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
             vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         }
 
-        // Init TTS
-        tts = new TextToSpeech(this, this);
-
         ScrollView scrollView = new ScrollView(this);
         scrollView.setBackgroundColor(C_BG);
         scrollView.setFillViewport(true);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(40), dp(16), dp(24));
+        root.setPadding(dp(20), dp(48), dp(20), dp(24));
         root.setBackgroundColor(C_BG);
 
         // === Header ===
@@ -190,7 +156,7 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
 
         TextView tvTitle = new TextView(this);
         tvTitle.setText("📐 ToF 测距仪");
-        tvTitle.setTextSize(20);
+        tvTitle.setTextSize(18);
         tvTitle.setTextColor(C_TEXT);
         tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
         header.addView(tvTitle);
@@ -205,36 +171,16 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         header.addView(tvSensorInfo, infoLp);
 
         root.addView(header);
-        root.addView(makeSeparator());
-
-        // === Shake / Auto-cal status bar ===
-        LinearLayout statusBar = new LinearLayout(this);
-        statusBar.setOrientation(LinearLayout.HORIZONTAL);
-        statusBar.setGravity(Gravity.CENTER_VERTICAL);
-        statusBar.setPadding(0, dp(4), 0, dp(4));
-
-        tvAutoCal = new TextView(this);
-        tvAutoCal.setTextSize(11);
-        tvAutoCal.setTextColor(C_WARN);
-        statusBar.addView(tvAutoCal);
-
-        tvShakeStatus = new TextView(this);
-        tvShakeStatus.setTextSize(11);
-        tvShakeStatus.setTextColor(C_ERR);
-        tvShakeStatus.setGravity(Gravity.END);
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        statusBar.addView(tvShakeStatus, slp);
-
-        root.addView(statusBar);
+        root.addView(makeGap(dp(16)));
 
         // === Main Distance Card ===
         LinearLayout distCard = makeCard();
         distCard.setGravity(Gravity.CENTER_HORIZONTAL);
-        distCard.setPadding(dp(20), dp(28), dp(20), dp(16));
+        distCard.setPadding(dp(24), dp(32), dp(24), dp(20));
 
         tvHoldLabel = new TextView(this);
         tvHoldLabel.setText("● 测量中");
-        tvHoldLabel.setTextSize(12);
+        tvHoldLabel.setTextSize(11);
         tvHoldLabel.setTextColor(C_ACCENT);
         tvHoldLabel.setGravity(Gravity.CENTER);
         distCard.addView(tvHoldLabel);
@@ -242,18 +188,18 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         LinearLayout distRow = new LinearLayout(this);
         distRow.setOrientation(LinearLayout.HORIZONTAL);
         distRow.setGravity(Gravity.CENTER);
-        distRow.setPadding(0, dp(8), 0, 0);
+        distRow.setPadding(0, dp(12), 0, 0);
 
         tvDistance = new TextView(this);
         tvDistance.setText("--");
-        tvDistance.setTextSize(64);
+        tvDistance.setTextSize(72);
         tvDistance.setTextColor(C_ACCENT);
         tvDistance.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         distRow.addView(tvDistance);
 
         tvUnit = new TextView(this);
         tvUnit.setText(" cm");
-        tvUnit.setTextSize(24);
+        tvUnit.setTextSize(28);
         tvUnit.setTextColor(C_ACCENT);
         tvUnit.setGravity(Gravity.CENTER_VERTICAL);
         tvUnit.setPadding(dp(4), 0, 0, 0);
@@ -261,17 +207,11 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
 
         distCard.addView(distRow);
 
-        tvRawInfo = new TextView(this);
-        tvRawInfo.setTextSize(12);
-        tvRawInfo.setTextColor(C_DIM);
-        tvRawInfo.setGravity(Gravity.CENTER);
-        tvRawInfo.setPadding(0, dp(6), 0, 0);
-        distCard.addView(tvRawInfo);
-
+        // Quality
         tvQuality = new TextView(this);
         tvQuality.setTextSize(11);
         tvQuality.setGravity(Gravity.CENTER);
-        tvQuality.setPadding(0, dp(2), 0, 0);
+        tvQuality.setPadding(0, dp(8), 0, 0);
         distCard.addView(tvQuality);
 
         tvConfidenceBar = new TextView(this);
@@ -282,6 +222,14 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         tvConfidenceBar.setPadding(0, dp(2), 0, 0);
         distCard.addView(tvConfidenceBar);
 
+        // Raw info
+        tvRawInfo = new TextView(this);
+        tvRawInfo.setTextSize(10);
+        tvRawInfo.setTextColor(C_DIM);
+        tvRawInfo.setGravity(Gravity.CENTER);
+        tvRawInfo.setPadding(0, dp(4), 0, 0);
+        distCard.addView(tvRawInfo);
+
         tvLockedInfo = new TextView(this);
         tvLockedInfo.setTextSize(11);
         tvLockedInfo.setTextColor(C_BLUE);
@@ -291,64 +239,36 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         distCard.addView(tvLockedInfo);
 
         root.addView(distCard);
-        root.addView(makeGap(dp(8)));
+        root.addView(makeGap(dp(12)));
 
-        // === Quick Action Buttons (small) ===
-        LinearLayout quickRow = new LinearLayout(this);
-        quickRow.setOrientation(LinearLayout.HORIZONTAL);
-        quickRow.setGravity(Gravity.CENTER);
+        // === Sensor Debug Card (always visible, helps diagnose accuracy) ===
+        LinearLayout debugCard = makeCard();
+        debugCard.setPadding(dp(14), dp(10), dp(14), dp(10));
+        tvSensorDebug = new TextView(this);
+        tvSensorDebug.setTextSize(10);
+        tvSensorDebug.setTextColor(C_DIM);
+        tvSensorDebug.setTypeface(Typeface.MONOSPACE);
+        tvSensorDebug.setLineSpacing(dp(2), 1);
+        debugCard.addView(tvSensorDebug);
+        root.addView(debugCard);
+        root.addView(makeGap(dp(12)));
+
+        // === Action buttons ===
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER);
         btnCapture = makeSmallButton("📸 锁定", C_BLUE);
-        btnTTS = makeSmallButton("🔊 语音", C_DIM);
         btnContinuous = makeSmallButton("⏺ 连测", C_GREEN);
         btnExportCSV = makeSmallButton("📄 导出", C_ORANGE);
-        quickRow.addView(btnCapture, lp(0, dp(36), 1));
-        quickRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
-        quickRow.addView(btnTTS, lp(0, dp(36), 1));
-        quickRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
-        quickRow.addView(btnContinuous, lp(0, dp(36), 1));
-        quickRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
-        quickRow.addView(btnExportCSV, lp(0, dp(36), 1));
-        root.addView(quickRow);
-        root.addView(makeGap(dp(8)));
+        actionRow.addView(btnCapture, lp(0, dp(38), 1));
+        actionRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
+        actionRow.addView(btnContinuous, lp(0, dp(38), 1));
+        actionRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
+        actionRow.addView(btnExportCSV, lp(0, dp(38), 1));
+        root.addView(actionRow);
+        root.addView(makeGap(dp(12)));
 
-        // === Multi-Target Card ===
-        cardMultiTarget = makeCard();
-        cardMultiTarget.setPadding(dp(14), dp(12), dp(14), dp(12));
-        cardMultiTarget.setVisibility(View.GONE);
-        cardMultiTarget.addView(makeLabel("🎯 多目标检测"));
-        tvMultiTarget = makeBodyText();
-        cardMultiTarget.addView(tvMultiTarget);
-        root.addView(cardMultiTarget);
-        root.addView(makeGap(dp(8)));
-
-        // === Tilt Card ===
-        cardTilt = makeCard();
-        cardTilt.setPadding(dp(14), dp(12), dp(14), dp(12));
-        cardTilt.addView(makeLabel("🧭 倾斜补偿"));
-        tvPitch = makeBodyText();
-        cardTilt.addView(tvPitch);
-        tvHorizontal = makeBodyText();
-        tvHorizontal.setTextColor(C_ACCENT);
-        cardTilt.addView(tvHorizontal);
-        tvVertical = makeBodyText();
-        tvVertical.setTextColor(C_WARN);
-        cardTilt.addView(tvVertical);
-        tvTiltInfo = makeDimText();
-        cardTilt.addView(tvTiltInfo);
-        root.addView(cardTilt);
-        root.addView(makeGap(dp(8)));
-
-        // === Area Card ===
-        cardArea = makeCard();
-        cardArea.setPadding(dp(14), dp(12), dp(14), dp(12));
-        cardArea.setVisibility(View.GONE);
-        cardArea.addView(makeLabel("📐 面积测量"));
-        tvAreaResult = makeBodyText();
-        cardArea.addView(tvAreaResult);
-        root.addView(cardArea);
-        root.addView(makeGap(dp(8)));
-
-        // === Continuous Mode Card ===
+        // === Continuous Card (hidden) ===
         cardContinuous = makeCard();
         cardContinuous.setPadding(dp(14), dp(12), dp(14), dp(12));
         cardContinuous.setVisibility(View.GONE);
@@ -356,81 +276,40 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         tvContinuousInfo = makeBodyText();
         cardContinuous.addView(tvContinuousInfo);
         root.addView(cardContinuous);
-        root.addView(makeGap(dp(8)));
+        root.addView(makeGap(dp(12)));
 
         // === Stats Card ===
         LinearLayout statsCard = makeCard();
-        statsCard.setPadding(dp(14), dp(12), dp(14), dp(12));
-
-        LinearLayout statsHeader = new LinearLayout(this);
-        statsHeader.setOrientation(LinearLayout.HORIZONTAL);
-        statsHeader.setGravity(Gravity.CENTER_VERTICAL);
-        statsHeader.addView(makeLabel("📊 统计"));
-        tvTrend = new TextView(this);
-        tvTrend.setTextSize(11);
-        tvTrend.setPadding(dp(8), 0, 0, 0);
-        statsHeader.addView(tvTrend);
-        statsCard.addView(statsHeader);
-
+        statsCard.setPadding(dp(14), dp(10), dp(14), dp(10));
         tvStats = makeBodyText();
+        tvStats.setTextSize(11);
         statsCard.addView(tvStats);
         root.addView(statsCard);
-        root.addView(makeGap(dp(8)));
+        root.addView(makeGap(dp(12)));
 
-        // === Chart Card ===
-        LinearLayout chartCard = makeCard();
-        chartCard.setPadding(dp(14), dp(12), dp(14), dp(12));
-        chartCard.addView(makeLabel("📈 实时曲线"));
-        chartView = new DistanceChartView(this);
-        LinearLayout.LayoutParams chartLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(150));
-        chartLp.topMargin = dp(6);
-        chartCard.addView(chartView, chartLp);
-        root.addView(chartCard);
-        root.addView(makeGap(dp(8)));
-
-        // === Control Buttons ===
-        LinearLayout btnRow1 = new LinearLayout(this);
-        btnRow1.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow1.setGravity(Gravity.CENTER);
+        // === Control buttons ===
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER);
         btnHold = makeButton("⏸ 暂停", C_WARN);
         btnReset = makeButton("🔄 重置", C_BLUE);
-        btnUnit = makeButton("📏 单位", C_PURPLE);
-        btnArea = makeButton("📐 面积", C_GREEN);
-        btnRow1.addView(btnHold, lp(0, dp(40), 1));
-        btnRow1.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
-        btnRow1.addView(btnReset, lp(0, dp(40), 1));
-        btnRow1.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
-        btnRow1.addView(btnUnit, lp(0, dp(40), 1));
-        btnRow1.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
-        btnRow1.addView(btnArea, lp(0, dp(40), 1));
-        root.addView(btnRow1);
-        root.addView(makeGap(dp(6)));
+        btnUnit = makeButton("📏 cm", 0xFF8B5CF6);
+        btnRow.addView(btnHold, lp(0, dp(40), 1));
+        btnRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
+        btnRow.addView(btnReset, lp(0, dp(40), 1));
+        btnRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
+        btnRow.addView(btnUnit, lp(0, dp(40), 1));
+        root.addView(btnRow);
+        root.addView(makeGap(dp(12)));
 
-        LinearLayout btnRow2 = new LinearLayout(this);
-        btnRow2.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow2.setGravity(Gravity.CENTER);
-        btnCalibrate = makeButton("🧭 校准", C_GREEN);
-        btnClearStats = makeButton("🗑 清除", 0xFF64748B);
-        btnRow2.addView(btnCalibrate, lp(0, dp(40), 1));
-        btnRow2.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
-        btnRow2.addView(btnClearStats, lp(0, dp(40), 1));
-        root.addView(btnRow2);
-
-        root.addView(makeGap(dp(8)));
-
-        // === Info Card ===
-        LinearLayout infoCard = makeCard();
-        infoCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+        // === Info bar ===
         tvHz = makeDimText();
-        infoCard.addView(tvHz);
+        tvHz.setTextSize(10);
+        root.addView(tvHz);
         tvStatus = makeDimText();
+        tvStatus.setTextSize(10);
         tvStatus.setPadding(0, dp(2), 0, 0);
-        infoCard.addView(tvStatus);
-        tvHistoryCount = makeDimText();
-        tvHistoryCount.setPadding(0, dp(2), 0, 0);
-        infoCard.addView(tvHistoryCount);
-        root.addView(infoCard);
+        root.addView(tvStatus);
 
         scrollView.addView(root);
         setContentView(scrollView);
@@ -439,18 +318,13 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         btnHold.setOnClickListener(v -> toggleHold());
         btnReset.setOnClickListener(v -> resetAll());
         btnUnit.setOnClickListener(v -> cycleUnit());
-        btnClearStats.setOnClickListener(v -> clearHistory());
-        btnCalibrate.setOnClickListener(v -> calibrateTilt());
         btnCapture.setOnClickListener(v -> captureMeasurement());
-        btnArea.setOnClickListener(v -> toggleAreaMode());
         btnContinuous.setOnClickListener(v -> toggleContinuousMode());
-        btnTTS.setOnClickListener(v -> toggleTTS());
         btnExportCSV.setOnClickListener(v -> exportCSV());
 
         // Sensor init
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         findTofSensor();
-        findImuSensors();
     }
 
     // ========== Sensor Setup ==========
@@ -459,30 +333,47 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         List<Sensor> all = sensorManager.getSensorList(Sensor.TYPE_ALL);
         tofSensor = null;
         String sensorName = "未找到";
+        String sensorDetails = "";
 
         for (Sensor s : all) {
             String name = s.getName().toLowerCase();
-            boolean isTof = s.getType() == SENSOR_TYPE_TOF
-                    || name.contains("tof") || name.contains("vl53");
+            int type = s.getType();
+            boolean isTof = type == SENSOR_TYPE_TOF
+                    || name.contains("tof") || name.contains("vl53")
+                    || name.contains("proximity") && s.getMaximumRange() > 5;
+
             if (isTof && tofSensor == null) {
                 tofSensor = s;
                 sensorName = s.getName();
+                sensorMaxRange = s.getMaximumRange() * 10f; // getMaximumRange() 通常返回 cm，转 mm
+                sensorResolution = Math.max(1f, s.getResolution() * 10f);
+
+                // 如果 getMaximumRange() 返回值很小（<50），说明单位可能是 cm
+                if (s.getMaximumRange() < 50) {
+                    sensorMaxRange = s.getMaximumRange() * 10f; // cm → mm
+                } else {
+                    sensorMaxRange = s.getMaximumRange(); // 已经是 mm
+                }
+
+                sensorDetails = String.format(Locale.getDefault(),
+                        "type=%d range=%.0fmm res=%.1fmm",
+                        type, sensorMaxRange, sensorResolution);
             }
         }
 
         if (tofSensor == null) {
             tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
             if (tofSensor != null) {
-                sensorName = tofSensor.getName() + " (降级)";
+                sensorName = tofSensor.getName() + " (Proximity降级)";
                 isProximityFallback = true;
+                sensorMaxRange = tofSensor.getMaximumRange() * 10f;
             }
         }
-        tvSensorInfo.setText(sensorName);
-    }
 
-    private void findImuSensors() {
-        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        tvSensorInfo.setText(sensorName);
+
+        // 更新滤波器的 maxRange
+        primaryFilter = new DistanceFilter(5, 0.4f, sensorMaxRange * 0.2f, sensorMaxRange);
     }
 
     @Override
@@ -490,10 +381,6 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         super.onResume();
         if (tofSensor != null)
             sensorManager.registerListener(this, tofSensor, SensorManager.SENSOR_DELAY_GAME);
-        if (accelSensor != null)
-            sensorManager.registerListener(this, accelSensor, SensorManager.SENSOR_DELAY_GAME);
-        if (gyroSensor != null)
-            sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override
@@ -502,61 +389,11 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         sensorManager.unregisterListener(this);
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (tts != null) {
-            tts.stop();
-            tts.shutdown();
-        }
-    }
-
-    // ========== TTS ==========
-
-    @Override
-    public void onInit(int status) {
-        ttsReady = (status == TextToSpeech.SUCCESS);
-        if (ttsReady) {
-            tts.setLanguage(Locale.CHINESE);
-        }
-    }
-
-    private void speak(String text) {
-        if (ttsReady && ttsEnabled) {
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tof_speak");
-        }
-    }
-
     // ========== Sensor Events ==========
 
     @Override
     public void onSensorChanged(SensorEvent event) {
         int type = event.sensor.getType();
-
-        // Shake detection (always process accel)
-        if (type == Sensor.TYPE_ACCELEROMETER) {
-            tilt.updateAccelerometer(event);
-            boolean wasShaking = shakeDetector.isShaking();
-            boolean nowShaking = shakeDetector.update(event);
-
-            // Update shake UI on state change
-            if (wasShaking != nowShaking) {
-                tvShakeStatus.post(() -> {
-                    if (shakeDetector.isShaking()) {
-                        tvShakeStatus.setText("📳 晃动中 — 已冻结");
-                        displayFrozen = true;
-                    } else {
-                        tvShakeStatus.setText("");
-                        displayFrozen = false;
-                    }
-                });
-            }
-            return;
-        }
-        if (type == Sensor.TYPE_GYROSCOPE) {
-            tilt.updateGyroscope(event);
-            return;
-        }
 
         if (type != SENSOR_TYPE_TOF && type != Sensor.TYPE_PROXIMITY) return;
         if (isHolding) return;
@@ -565,120 +402,91 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         stats.tickHz();
 
         long now = SystemClock.elapsedRealtime();
-        if (now - lastUiUpdate < 50) return; // 20fps cap for less jitter
+        if (now - lastUiUpdate < 50) return;
         lastUiUpdate = now;
 
         float rawMm = event.values[0];
+        lastRawMm = rawMm;
 
-        // Auto-calibration phase (first 3 seconds)
-        if (!autoCalDone) {
-            long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed < AUTO_CAL_DURATION_MS && rawMm > 0 && rawMm < 4000) {
-                calSum += rawMm;
-                calCount++;
-                tvAutoCal.post(() -> tvAutoCal.setText(
-                        String.format(Locale.getDefault(), "⏳ 自我校准中... (%.0f%%)", elapsed * 100f / AUTO_CAL_DURATION_MS)));
-                return;
-            } else {
-                autoCalDone = true;
-                if (calCount > 0) {
-                    sensorOffset = calSum / calCount;
+        // 自动检测单位：观察前 30 个读数的范围
+        if (!unitDetected && detectCount < 30) {
+            if (rawMm > 0) {
+                observedMin = Math.min(observedMin, rawMm);
+                observedMax = Math.max(observedMax, rawMm);
+                detectCount++;
+            }
+            if (detectCount >= 10) {
+                // 如果最大值 < 100，大概率是 cm 不是 mm
+                if (observedMax < 100 && observedMax > 0) {
+                    sensorValuesInMm = false;
+                    sensorMaxRange = sensorMaxRange / 10f; // 调整范围
                 }
-                tvAutoCal.post(() -> tvAutoCal.setText("✓ 已自动校准"));
-                tvAutoCal.postDelayed(() -> tvAutoCal.post(() -> tvAutoCal.setText("")), 2000);
+                unitDetected = true;
+                // 用检测到的单位重新创建滤波器
+                float effectiveMaxRange = sensorValuesInMm ? sensorMaxRange : sensorMaxRange / 10f;
+                primaryFilter = new DistanceFilter(5, 0.4f, effectiveMaxRange * 0.2f, effectiveMaxRange);
             }
         }
 
-        // Apply offset
-        rawMm -= sensorOffset;
-        if (rawMm < 0) rawMm = 0;
-
-        // Multi-target
-        boolean hasMultiTarget = !isProximityFallback && event.values.length > 1;
-        float[] targetDistances = new float[MAX_TARGETS];
-        int validTargets = 0;
-        if (hasMultiTarget) {
-            for (int t = 0; t < MAX_TARGETS && t < event.values.length; t++) {
-                float tDist = event.values[t] - sensorOffset;
-                if (tDist > 0 && tDist < 4000) {
-                    targetDistances[t] = targetFilters[t].filter(tDist);
-                    if (targetFilters[t].isWarmedUp()) validTargets++;
-                } else {
-                    targetDistances[t] = -1;
-                }
-            }
-            lastTargetDists = targetDistances;
+        // 如果传感器输出的是 cm，转成 mm
+        float rawValue = rawMm;
+        if (!sensorValuesInMm) {
+            rawMm = rawMm * 10f; // cm → mm
         }
 
-        // Filter
+        // Warm-up
+        if (warmUpCount < WARM_UP_SAMPLES) {
+            warmUpCount++;
+            return;
+        }
+
+        // 滤波
         float filtered = primaryFilter.filter(rawMm);
 
-        // Shake freeze: keep last filtered value
         if (displayFrozen) {
             filtered = lastFiltered > 0 ? lastFiltered : filtered;
         }
-
-        // Lock mode
         if (isLocked) {
             filtered = lockedDistance;
         }
 
         if (filtered > 0 && !displayFrozen && !isLocked) {
             stats.add(filtered);
-            rawHistory.addLast(rawMm);
-            if (rawHistory.size() > MAX_HISTORY) rawHistory.removeFirst();
-
-            // Chart
-            chartView.addPoint(filtered);
-
-            // Continuous measurement check
             checkContinuous(filtered);
         }
 
         lastFiltered = filtered;
-        updateDisplay(rawMm, filtered, hasMultiTarget, validTargets, targetDistances);
+        updateDisplay(rawValue, rawMm, filtered);
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
-    // ========== Continuous Measurement ==========
+    // ========== Continuous ==========
 
     private void checkContinuous(float filtered) {
         if (!continuousMode) return;
-
         if (lastStableValue < 0) {
             lastStableValue = filtered;
             lastStableTime = System.currentTimeMillis();
             return;
         }
-
         if (Math.abs(filtered - lastStableValue) < STABLE_RANGE_MM) {
-            // Still stable
             if (System.currentTimeMillis() - lastStableTime > STABLE_THRESHOLD_MS) {
-                // Stable long enough — record it
                 if (continuousRecords.isEmpty() ||
-                        Math.abs(continuousRecords.get(continuousRecords.size() - 1).distanceMm - filtered) > 30) {
-                    MeasurementRecord rec = new MeasurementRecord(filtered, System.currentTimeMillis());
-                    continuousRecords.add(rec);
-
+                        Math.abs(continuousRecords.get(continuousRecords.size() - 1).distanceMm - filtered) > 20) {
+                    continuousRecords.add(new MeasurementRecord(filtered, System.currentTimeMillis()));
+                    vibrate(50);
                     String u = UNIT_LABELS[currentUnit];
                     String valStr = fmt(convertUnit(filtered, currentUnit), currentUnit);
-                    speak("记录 " + valStr + " " + u);
-
-                    vibrate(50);
-
                     tvContinuousInfo.post(() -> tvContinuousInfo.setText(
-                            String.format(Locale.getDefault(),
-                                    "已记录 %d 个点\n最近: %s %s",
+                            String.format(Locale.getDefault(), "已记录 %d 个点\n最近: %s %s",
                                     continuousRecords.size(), valStr, u)));
                 }
-                // Reset for next measurement
                 lastStableValue = filtered;
                 lastStableTime = System.currentTimeMillis();
             }
         } else {
-            // Not stable, reset
             lastStableValue = filtered;
             lastStableTime = System.currentTimeMillis();
         }
@@ -686,9 +494,7 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
 
     // ========== Display ==========
 
-    private void updateDisplay(float rawMm, float filtered,
-                                boolean hasMultiTarget, int validTargets,
-                                float[] targetDists) {
+    private void updateDisplay(float rawSensorValue, float rawMm, float filtered) {
         if (filtered < 0 || rawMm < 0) {
             tvDistance.setText("ERR");
             tvDistance.setTextColor(C_ERR);
@@ -709,169 +515,84 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         else if (displayFrozen) stateText = "📳 晃动冻结";
         tvHoldLabel.setText(stateText);
 
-        // Round to 5mm for display
-        float rounded = Math.round(filtered / 5f) * 5f;
+        // 显示 1mm 步进
+        float rounded = Math.round(filtered);
         float displayVal = convertUnit(rounded, currentUnit);
         tvDistance.setText(fmt(displayVal, currentUnit));
         tvUnit.setText(" " + UNIT_LABELS[currentUnit]);
 
         // Raw info
-        float diff = Math.abs(rawMm - filtered);
         tvRawInfo.setText(String.format(Locale.getDefault(),
-                "%.0f→%.0f mm (Δ%.0f) %s",
-                rawMm, filtered, diff,
-                shakeDetector.isShaking() ? "📳" : ""));
+                "原始: %.1f → 滤波: %.1f mm", rawMm, filtered));
 
         // Quality
         float stdDev = stats.getStdDev();
         String qualityLabel;
         int qualityColor;
-        if (stdDev < 5) {
-            qualityLabel = "🟢 高精度 (σ=" + fmtDec(stdDev, 0) + ")";
+        if (stdDev < 3) {
+            qualityLabel = "🟢 高精度";
             qualityColor = C_GOOD;
-        } else if (stdDev < 20) {
-            qualityLabel = "🟡 良好 (σ=" + fmtDec(stdDev, 0) + ")";
+        } else if (stdDev < 10) {
+            qualityLabel = "🟡 良好";
             qualityColor = C_FAIR;
         } else {
-            qualityLabel = "🔴 波动 (σ=" + fmtDec(stdDev, 0) + ")";
+            qualityLabel = "🔴 波动";
             qualityColor = C_POOR;
         }
         tvQuality.setText(qualityLabel);
         tvQuality.setTextColor(qualityColor);
 
         // Confidence bar
-        int barLen = Math.max(0, Math.min(20, (int) (20 - stdDev)));
+        int barLen = Math.max(0, Math.min(20, (int) (20 - stdDev * 0.5f)));
         StringBuilder bar = new StringBuilder("[");
         for (int i = 0; i < 20; i++) bar.append(i < barLen ? "█" : "░");
         bar.append("]");
         tvConfidenceBar.setText(bar.toString());
         tvConfidenceBar.setTextColor(qualityColor);
 
-        // Locked info
-        if (isLocked) {
-            tvLockedInfo.setVisibility(View.VISIBLE);
-            tvLockedInfo.setText("📸 按「解锁」恢复实时测量");
-        } else {
-            tvLockedInfo.setVisibility(View.GONE);
-        }
-
-        // Trend
-        float trend = stats.getTrend();
-        String trendStr;
-        if (Math.abs(trend) < 1) trendStr = "→ 稳定";
-        else if (trend > 0) trendStr = String.format(Locale.getDefault(), "↑ +%.0f", trend);
-        else trendStr = String.format(Locale.getDefault(), "↓ %.0f", trend);
-        tvTrend.setText(trendStr);
-        tvTrend.setTextColor(Math.abs(trend) < 1 ? C_ACCENT : C_WARN);
-
-        // Multi-target
-        if (hasMultiTarget && validTargets > 1) {
-            cardMultiTarget.setVisibility(View.VISIBLE);
-            StringBuilder mt = new StringBuilder();
-            String u = UNIT_LABELS[currentUnit];
-            for (int t = 0; t < MAX_TARGETS; t++) {
-                if (targetDists[t] > 0 && targetFilters[t].isWarmedUp()) {
-                    float conv = convertUnit(targetDists[t], currentUnit);
-                    mt.append(String.format(Locale.getDefault(),
-                            "%s %s %s\n", t == 0 ? "🎯" : "→", fmt(conv, currentUnit), u));
-                }
-            }
-            tvMultiTarget.setText(mt.toString().trim());
-        } else {
-            cardMultiTarget.setVisibility(View.GONE);
-        }
-
-        // Tilt
-        updateTiltDisplay(filtered);
-
-        // Area mode
-        updateAreaDisplay(filtered);
+        tvLockedInfo.setVisibility(isLocked ? View.VISIBLE : View.GONE);
+        if (isLocked) tvLockedInfo.setText("📸 点「解锁」恢复");
 
         // Stats
-        updateStatsText();
+        if (stats.getSampleCount() > 0) {
+            String u = UNIT_LABELS[currentUnit];
+            tvStats.setText(String.format(Locale.getDefault(),
+                    "范围: %s ~ %s  均值: %s  σ: %s",
+                    fmt(convertUnit(stats.getMin(), currentUnit), currentUnit),
+                    fmt(convertUnit(stats.getMax(), currentUnit), currentUnit),
+                    fmt(convertUnit(stats.getAvg(), currentUnit), currentUnit),
+                    fmtDec(stdDev, 1)));
+        } else {
+            tvStats.setText("等待数据...");
+            tvStats.setTextColor(C_DIM);
+        }
+
+        // Sensor Debug — 帮助诊断精度问题
+        String unitHint = sensorValuesInMm ? "mm" : "cm(自动转mm)";
+        tvSensorDebug.setText(String.format(Locale.getDefault(),
+                "传感器: %s\n" +
+                "原始单位: %s | 量程: %.0f mm | 分辨率: %.1f mm\n" +
+                "values.length: %d | 最近原始值: %.2f\n" +
+                "检测范围: %.1f ~ %.1f (前%d个)\n" +
+                "滤波参数: 窗口=5 alpha=0.4 尖峰=%.0fmm",
+                tofSensor != null ? tofSensor.getName() : "null",
+                unitHint, sensorMaxRange, sensorResolution,
+                1, rawSensorValue,
+                observedMin, observedMax, detectCount,
+                sensorMaxRange * 0.2f));
 
         // Info
         tvHz.setText(String.format(Locale.getDefault(),
-                "%d Hz | %d samples | Median+EMA²",
-                stats.getActualHz(), eventCount));
-        tvHistoryCount.setText(String.format(Locale.getDefault(),
-                "历史: %d | 曲线: %d", rawHistory.size(), chartView.getPointCount()));
+                "%d Hz · %d samples", stats.getActualHz(), eventCount));
 
         if (isProximityFallback) {
-            tvStatus.setText("⚠ 降级 Proximity");
+            tvStatus.setText("⚠ 降级 Proximity 传感器 — 仅支持近/远");
             tvStatus.setTextColor(C_WARN);
         } else {
             tvStatus.setText(String.format(Locale.getDefault(),
-                    "%.0f-%.0f mm 量程", Math.max(0, stats.getMin()), stats.getMax()));
+                    "量程: %.0f–%.0f mm", Math.max(0, stats.getMin()), stats.getMax()));
             tvStatus.setTextColor(C_DIM);
         }
-    }
-
-    private void updateTiltDisplay(float slantDist) {
-        float pitchDeg = tilt.getPitchDegrees();
-        String u = UNIT_LABELS[currentUnit];
-
-        tvPitch.setText(String.format(Locale.getDefault(),
-                "倾斜: %.1f° (%s)%s", pitchDeg, tilt.getTiltQuality(),
-                tilt.isCalibrated() ? " ✓" : ""));
-
-        if (slantDist > 0) {
-            float hDist = tilt.getHorizontalDistance(slantDist);
-            float vDist = tilt.getVerticalHeight(slantDist);
-            tvHorizontal.setText("↔ " + fmt(convertUnit(hDist, currentUnit), currentUnit) + " " + u);
-            tvVertical.setText("↕ " + fmt(convertUnit(Math.abs(vDist), currentUnit), currentUnit) + " " + u);
-        } else {
-            tvHorizontal.setText("↔ --");
-            tvVertical.setText("↕ --");
-        }
-
-        if (!tilt.isCalibrated())
-            tvTiltInfo.setText("💡 持平后点「校准」");
-        else if (Math.abs(pitchDeg) < 5)
-            tvTiltInfo.setText("📏 近乎水平");
-        else
-            tvTiltInfo.setText("📐 倾斜中 — 已自动换算");
-    }
-
-    private void updateAreaDisplay(float filtered) {
-        if (!areaMode) {
-            cardArea.setVisibility(View.GONE);
-            return;
-        }
-        cardArea.setVisibility(View.VISIBLE);
-
-        if (areaDist1 < 0) {
-            tvAreaResult.setText("第1次：对准一面墙，按「确认」");
-        } else if (areaDist2 < 0) {
-            tvAreaResult.setText(String.format(Locale.getDefault(),
-                    "第1次: %.1f cm ✓\n第2次：转向垂直面，按「确认」",
-                    areaDist1 / 10f));
-        } else {
-            float area = (areaDist1 * areaDist2) / 10000f; // cm² → m²
-            tvAreaResult.setText(String.format(Locale.getDefault(),
-                    "宽: %.1f cm × 高: %.1f cm\n面积: %.2f m²",
-                    areaDist1 / 10f, areaDist2 / 10f, area));
-            tvAreaResult.setTextColor(C_ACCENT);
-        }
-    }
-
-    private void updateStatsText() {
-        if (stats.getSampleCount() == 0) {
-            tvStats.setText("等待数据...");
-            tvStats.setTextColor(C_DIM);
-            return;
-        }
-        tvStats.setTextColor(C_TEXT);
-        String u = UNIT_LABELS[currentUnit];
-        float median = stats.getMedian();
-        tvStats.setText(String.format(Locale.getDefault(),
-                "最小:%s  最大:%s  平均:%s\n中位:%s  σ:%s  样本:%d",
-                fmt(convertUnit(stats.getMin(), currentUnit), currentUnit),
-                fmt(convertUnit(stats.getMax(), currentUnit), currentUnit),
-                fmt(convertUnit(stats.getAvg(), currentUnit), currentUnit),
-                fmt(convertUnit(median, currentUnit), currentUnit),
-                fmtDec(stats.getStdDev(), 1),
-                stats.getSampleCount()));
     }
 
     // ========== Actions ==========
@@ -893,140 +614,64 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
     private void resetAll() {
         stats.reset();
         primaryFilter.reset();
-        for (DistanceFilter f : targetFilters) f.reset();
-        tilt.reset();
         shakeDetector.reset();
-        chartView.clear();
         eventCount = 0;
         lastFiltered = -1;
-        rawHistory.clear();
+        lastRawMm = -1;
         isLocked = false;
         lockedDistance = -1;
-        areaMode = false;
-        areaDist1 = -1;
-        areaDist2 = -1;
         continuousMode = false;
         continuousRecords.clear();
         lastStableValue = -1;
-        autoCalDone = false;
-        sensorOffset = 0;
-        calSum = 0;
-        calCount = 0;
-        startTime = System.currentTimeMillis();
-        cardArea.setVisibility(View.GONE);
+        warmUpCount = 0;
+        displayFrozen = false;
+        unitDetected = false;
+        detectCount = 0;
+        observedMin = Float.MAX_VALUE;
+        observedMax = 0;
+        sensorValuesInMm = true;
         cardContinuous.setVisibility(View.GONE);
-        updateStatsText();
-    }
-
-    private void clearHistory() {
-        rawHistory.clear();
-        chartView.clear();
-        continuousRecords.clear();
-        stats.reset();
-        eventCount = 0;
-        updateStatsText();
+        updateDisplay(0, 0, -1);
     }
 
     private void cycleUnit() {
         currentUnit = (currentUnit + 1) % 4;
         ((TextView) btnUnit).setText("📏 " + UNIT_LABELS[currentUnit]);
-        updateStatsText();
-    }
-
-    private void calibrateTilt() {
-        tilt.calibrate();
-        TextView tv = (TextView) btnCalibrate;
-        tv.setText("✓ 已校准");
-        tv.setTextColor(C_GOOD);
-        setBackgroundTint(btnCalibrate, C_GOOD);
-        tv.postDelayed(() -> {
-            tv.setText("🧭 校准");
-            tv.setTextColor(Color.WHITE);
-            setBackgroundTint(btnCalibrate, C_GREEN);
-        }, 1500);
     }
 
     private void captureMeasurement() {
         if (isLocked) {
-            // Unlock
             isLocked = false;
             lockedDistance = -1;
             ((TextView) btnCapture).setText("📸 锁定");
             tvLockedInfo.setVisibility(View.GONE);
             return;
         }
-
-        // Lock current distance
         lockedDistance = lastFiltered;
         if (lockedDistance < 0) return;
-
         isLocked = true;
         ((TextView) btnCapture).setText("🔓 解锁");
         tvLockedInfo.setVisibility(View.VISIBLE);
-
         vibrate(100);
 
-        // Take screenshot
+        // Screenshot
         View rootView = getWindow().getDecorView().getRootView();
         rootView.post(() -> {
             try {
                 Bitmap bitmap = Bitmap.createBitmap(rootView.getWidth(), rootView.getHeight(), Bitmap.Config.ARGB_8888);
                 Canvas canvas = new Canvas(bitmap);
                 rootView.draw(canvas);
-
                 String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
                 String u = UNIT_LABELS[currentUnit];
-                String filename = String.format("tof_%s_%s%s.png",
-                        fmt(convertUnit(lockedDistance, currentUnit), currentUnit),
-                        u, timestamp);
-
+                String filename = String.format("tof_%s_%s_%s.png",
+                        fmt(convertUnit(lockedDistance, currentUnit), currentUnit), u, timestamp);
                 File dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
                 if (dir == null) dir = getFilesDir();
-                File file = new File(dir, filename);
-
-                FileOutputStream fos = new FileOutputStream(file);
+                FileOutputStream fos = new FileOutputStream(new File(dir, filename));
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
                 fos.close();
-
-                String valStr = fmt(convertUnit(lockedDistance, currentUnit), currentUnit);
-                speak("锁定 " + valStr + " " + u + "，已截图");
-            } catch (Exception e) {
-                // screenshot failed, but lock still works
-            }
+            } catch (Exception ignored) {}
         });
-    }
-
-    private void toggleAreaMode() {
-        if (!areaMode) {
-            // Start area mode
-            areaMode = true;
-            areaDist1 = -1;
-            areaDist2 = -1;
-            cardArea.setVisibility(View.VISIBLE);
-            ((TextView) btnArea).setText("📐 确认");
-            tvAreaResult.setTextColor(C_TEXT);
-            return;
-        }
-
-        // areaMode is true — btnArea acts as confirm
-        if (areaDist1 < 0 && lastFiltered > 0) {
-            areaDist1 = lastFiltered;
-            vibrate(80);
-            speak("第1次已记录");
-        } else if (areaDist1 > 0 && areaDist2 < 0 && lastFiltered > 0) {
-            areaDist2 = lastFiltered;
-            vibrate(80);
-            speak("面积已计算");
-            ((TextView) btnArea).setText("📐 重来");
-        } else {
-            // Reset
-            areaDist1 = -1;
-            areaDist2 = -1;
-            cardArea.setVisibility(View.GONE);
-            areaMode = false;
-            ((TextView) btnArea).setText("📐 面积");
-            tvAreaResult.setTextColor(C_TEXT);
-        }
     }
 
     private void toggleContinuousMode() {
@@ -1037,65 +682,32 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
             cardContinuous.setVisibility(View.VISIBLE);
             ((TextView) btnContinuous).setText("⏹ 停止");
             setBackgroundTint(btnContinuous, C_ERR);
-            speak("连续测量已开始");
         } else {
             cardContinuous.setVisibility(View.GONE);
             ((TextView) btnContinuous).setText("⏺ 连测");
             setBackgroundTint(btnContinuous, C_GREEN);
-            speak("连续测量已停止，共记录" + continuousRecords.size() + "个点");
-        }
-    }
-
-    private void toggleTTS() {
-        ttsEnabled = !ttsEnabled;
-        TextView tv = (TextView) btnTTS;
-        if (ttsEnabled) {
-            tv.setText("🔊 开");
-            tv.setTextColor(C_ACCENT);
-            speak("语音播报已开启");
-        } else {
-            tv.setText("🔇 关");
-            tv.setTextColor(C_DIM);
         }
     }
 
     private void exportCSV() {
-        if (rawHistory.isEmpty()) {
-            speak("没有数据可导出");
-            return;
-        }
-
+        if (stats.getSampleCount() == 0) return;
         try {
             String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
             File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
             if (dir == null) dir = getFilesDir();
             File file = new File(dir, "tof_data_" + timestamp + ".csv");
-
             FileWriter fw = new FileWriter(file);
-            fw.write("index,distance_mm\n");
-            int idx = 0;
-            for (float val : rawHistory) {
-                fw.write(String.format(Locale.getDefault(), "%d,%.0f\n", idx++, val));
-            }
-
-            // Also export continuous records if any
+            fw.write("timestamp,distance_mm\n");
             if (!continuousRecords.isEmpty()) {
-                fw.write("\n--- Continuous Measurements ---\n");
-                fw.write("timestamp,distance_mm\n");
                 SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
                 for (MeasurementRecord rec : continuousRecords) {
-                    fw.write(String.format(Locale.getDefault(), "%s,%.0f\n",
+                    fw.write(String.format(Locale.getDefault(), "%s,%.1f\n",
                             sdf.format(new Date(rec.timestamp)), rec.distanceMm));
                 }
             }
-
             fw.close();
-
             vibrate(100);
-            speak("已导出 " + rawHistory.size() + " 条数据");
-        } catch (IOException e) {
-            speak("导出失败");
-        }
+        } catch (IOException ignored) {}
     }
 
     private void vibrate(long ms) {
@@ -1147,14 +759,6 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
         return card;
     }
 
-    private View makeSeparator() {
-        View sep = new View(this);
-        sep.setBackgroundColor(C_CARD_BORDER);
-        sep.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-        return sep;
-    }
-
     private View makeGap(int height) {
         View gap = new View(this);
         gap.setLayoutParams(new LinearLayout.LayoutParams(0, height));
@@ -1168,7 +772,7 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
     private TextView makeLabel(String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
-        tv.setTextSize(13);
+        tv.setTextSize(12);
         tv.setTextColor(C_TEXT);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
         return tv;
@@ -1246,7 +850,6 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
     static class MeasurementRecord {
         final float distanceMm;
         final long timestamp;
-
         MeasurementRecord(float distanceMm, long timestamp) {
             this.distanceMm = distanceMm;
             this.timestamp = timestamp;
