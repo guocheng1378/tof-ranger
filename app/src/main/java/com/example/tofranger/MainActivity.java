@@ -47,8 +47,9 @@ import java.util.Locale;
 public class MainActivity extends Activity implements SensorEventListener {
 
     // 小米自定义 ToF 传感器类型（非 AOSP 标准，由 MIUI/HyperOS 定义）
-    // 不同 ROM 可能不同，因此 findTofSensor() 还会用 name 匹配做兜底
-    private static final int SENSOR_TYPE_MIUI_TOF = 33171040;
+    // 已知值：33171040（MIUI 12-14）、以及可能的新值
+    // 策略：优先用硬编码值，找不到时遍历全部传感器按名称匹配
+    private static final int[] KNOWN_TOF_TYPES = {33171040, 33171041, 65570, 65572};
 
     // Unit modes
     private static final int UNIT_MM = 0, UNIT_CM = 1, UNIT_M = 2, UNIT_INCH = 3;
@@ -58,7 +59,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     // State
     private boolean isHolding = false;
 
-    // Signal processing — 无范围限制
+    // Signal processing
     private DistanceFilter primaryFilter = new DistanceFilter(5, 0.5f, 0, 0);
 
     // Statistics
@@ -70,15 +71,19 @@ public class MainActivity extends Activity implements SensorEventListener {
     private Sensor accelerometer;
     private Sensor gyroscope;
     private boolean isProximityFallback = false;
+    private int detectedTofType = 0; // 实际探测到的传感器 type
 
     // 单位换算：传感器原始值 × unitScale = mm
-    // 默认 10（假设 cm→mm），校准后会自动调整
-    private float unitScale = 10f;
+    // 启动后自动根据前几个样本检测
+    private float unitScale = 1f; // 默认 1（先假设 mm），自动校准
     private boolean isCalibrated = false;
+    private boolean unitAutoDetected = false;
 
-    // Warm-up
+    // Warm-up + 自动单位检测
     private int warmUpCount = 0;
-    private static final int WARM_UP_SAMPLES = 3;
+    private static final int WARM_UP_SAMPLES = 5;
+    private float warmUpMaxRaw = 0;
+    private float warmUpMinRaw = Float.MAX_VALUE;
 
     // Lock
     private float lockedDistanceMm = -1;
@@ -363,24 +368,70 @@ public class MainActivity extends Activity implements SensorEventListener {
         tofSensor = null;
         String name = "未找到";
 
+        // 打印全部传感器信息到调试区（方便定位新的 type 值）
+        StringBuilder allSensorsDump = new StringBuilder();
+        allSensorsDump.append("=== 全部传感器 ===\n");
         for (Sensor s : all) {
-            String n = s.getName().toLowerCase();
-            int type = s.getType();
-            if ((type == SENSOR_TYPE_MIUI_TOF || n.contains("tof") || n.contains("vl53")) && tofSensor == null) {
-                tofSensor = s;
-                name = s.getName();
-                break;
+            allSensorsDump.append(String.format(Locale.getDefault(),
+                    "type=%d name=%s vendor=%s range=%.1f\n",
+                    s.getType(), s.getName(), s.getVendor(), s.getMaximumRange()));
+        }
+
+        // 第一轮：按已知 type 值匹配
+        for (int tofType : KNOWN_TOF_TYPES) {
+            for (Sensor s : all) {
+                if (s.getType() == tofType) {
+                    tofSensor = s;
+                    detectedTofType = tofType;
+                    name = s.getName() + " (type=" + tofType + ")";
+                    break;
+                }
+            }
+            if (tofSensor != null) break;
+        }
+
+        // 第二轮：按名称模糊匹配（兜底，应对 type 值完全变掉的情况）
+        if (tofSensor == null) {
+            for (Sensor s : all) {
+                String n = s.getName().toLowerCase(Locale.ROOT);
+                int type = s.getType();
+                // 跳过标准传感器类型（加速度、陀螺仪等）
+                if (type < 65536) continue;
+                if (n.contains("tof") || n.contains("vl53") || n.contains("d-tof")
+                        || n.contains("dtof") || n.contains("range")) {
+                    tofSensor = s;
+                    detectedTofType = type;
+                    name = s.getName() + " (type=" + type + " 匹配)";
+                    break;
+                }
             }
         }
 
+        // 第三轮：列出所有非标准 type（>65536）的传感器供参考
+        if (tofSensor == null) {
+            allSensorsDump.append("\n--- 非标准传感器(type>65536) ---\n");
+            for (Sensor s : all) {
+                if (s.getType() > 65536) {
+                    allSensorsDump.append(String.format(Locale.getDefault(),
+                            "★ type=%d name=%s range=%.1f\n",
+                            s.getType(), s.getName(), s.getMaximumRange()));
+                }
+            }
+        }
+
+        // 最终降级：Proximity
         if (tofSensor == null) {
             tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
             if (tofSensor != null) {
-                name = tofSensor.getName() + " (降级)";
+                name = tofSensor.getName() + " (降级Proximity)";
                 isProximityFallback = true;
             }
         }
+
         tvSensorInfo.setText(name);
+        // 将传感器列表写入调试区，方便用户反馈
+        final String dump = allSensorsDump.toString();
+        tvSensorDebug.post(() -> tvSensorDebug.setText(dump));
     }
 
     private void findAdditionalSensors() {
@@ -426,8 +477,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             return;
         }
 
-        // Distance sensor
-        if (type != SENSOR_TYPE_MIUI_TOF && type != Sensor.TYPE_PROXIMITY) return;
+        // Distance sensor — 用 detectedTofType 而非硬编码值
+        boolean isTofEvent = (detectedTofType > 0 && type == detectedTofType)
+                || type == Sensor.TYPE_PROXIMITY;
+        if (!isTofEvent) return;
         if (isHolding) return;
         if (shakeDetector.isShaking()) return;
 
@@ -441,20 +494,43 @@ public class MainActivity extends Activity implements SensorEventListener {
         float raw = event.values[0];
         lastRawSensorValue = raw;
 
-        // 动态溢出阈值：优先用 API 量程，兜底 8190（VL53L0X 溢出值）
-        float overflowThreshold;
-        if (tofSensor != null && tofSensor.getMaximumRange() > 0) {
-            overflowThreshold = tofSensor.getMaximumRange() * unitScale;
-        } else {
-            overflowThreshold = 8190;
+        // ====== 自动单位检测（warm-up 阶段）======
+        if (warmUpCount < WARM_UP_SAMPLES) {
+            warmUpCount++;
+            if (raw > warmUpMaxRaw) warmUpMaxRaw = raw;
+            if (raw > 0 && raw < warmUpMinRaw) warmUpMinRaw = raw;
+
+            // warm-up 结束时做单位判断
+            if (warmUpCount == WARM_UP_SAMPLES && !unitAutoDetected) {
+                autoDetectUnitScale();
+            }
+            return;
         }
 
-        if (raw * unitScale >= overflowThreshold) {
+        // ====== 溢出/无效值判断 ======
+        // 用传感器 API 的最大量程（SI 单位，即 mm）作为上界
+        float overflowThresholdMm;
+        if (tofSensor != null && tofSensor.getMaximumRange() > 0) {
+            overflowThresholdMm = tofSensor.getMaximumRange();
+        } else {
+            overflowThresholdMm = 8190; // VL53L0X 典型溢出值
+        }
+
+        // 换算: 传感器原始值 × unitScale = mm
+        float mm = raw * unitScale;
+
+        // 判断是否溢出（超过传感器量程）
+        if (mm >= overflowThresholdMm) {
             if (lastFilteredMm > 0) {
                 updateDisplay(raw, lastFilteredMm, false);
             } else {
                 updateDisplay(raw, -1, true);
             }
+            return;
+        }
+
+        // 丢弃负值和零
+        if (mm <= 0) {
             return;
         }
 
@@ -464,15 +540,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             calRawCount++;
             return;
         }
-
-        // Warm-up
-        if (warmUpCount < WARM_UP_SAMPLES) {
-            warmUpCount++;
-            return;
-        }
-
-        // 换算: 传感器原始值 × unitScale = mm
-        float mm = raw * unitScale;
 
         // 滤波
         float filtered = primaryFilter.filter(mm);
@@ -630,14 +697,53 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         tvSensorDebug.setText(String.format(Locale.getDefault(),
                 "传感器: %s (type=%d)\n" +
-                "API量程: %.0f  API分辨率: %.4f\n" +
-                "换算系数: %.4f %s\n" +
+                "API量程: %.0f mm  API分辨率: %.4f\n" +
+                "换算系数: %.4f %s  单位自动检测: %s\n" +
+                "warm-up maxRaw: %.2f  minRaw: %.2f\n" +
                 "最近原始值: %.2f",
                 tofSensor != null ? tofSensor.getName() : "null",
-                tofSensor != null ? tofSensor.getType() : 0,
+                detectedTofType,
                 apiRange, apiRes,
-                unitScale, isCalibrated ? "(已校准)" : "(默认×10)",
+                unitScale, isCalibrated ? "(已校准)" : "(自动)",
+                unitAutoDetected ? "已完成" : "未完成",
+                warmUpMaxRaw, warmUpMinRaw,
                 rawSensorValue));
+    }
+
+    // ========== 自动单位检测 ==========
+
+    /**
+     * 根据 warm-up 阶段采集的样本自动判断传感器输出单位。
+     *
+     * 逻辑：
+     * - VL53L1X 量程 4000mm，正常读数 50~4000，传感器直接输出 mm
+     * - VL53L0X 量程 1200mm，正常读数 50~1200，传感器直接输出 mm
+     * - 如果传感器输出 cm，同样距离值会小 10 倍（如 1m → 100）
+     * - 如果 maxRaw < 500 → 很可能是 cm 单位 → unitScale = 10
+     * - 如果 maxRaw >= 500 → 大概率是 mm 单位 → unitScale = 1
+     */
+    private void autoDetectUnitScale() {
+        // 用 API 返回的量程做辅助判断
+        float apiRange = tofSensor != null ? tofSensor.getMaximumRange() : 0;
+
+        if (warmUpMaxRaw < 500 && apiRange > 500) {
+            // API 说量程 >500mm，但实际读数 <500 → 传感器输出 cm
+            unitScale = 10f;
+        } else if (warmUpMaxRaw >= 500) {
+            // 读数已经 >=500，传感器输出 mm
+            unitScale = 1f;
+        } else if (apiRange > 0 && apiRange <= 100) {
+            // API 返回的量程很小（cm 级）→ 传感器输出 cm
+            unitScale = 10f;
+        } else if (warmUpMaxRaw > 100) {
+            // 读数 > 100，大概率是 mm
+            unitScale = 1f;
+        } else {
+            // 保守默认：mm
+            unitScale = 1f;
+        }
+
+        unitAutoDetected = true;
     }
 
     // ========== 校准 ==========
@@ -770,8 +876,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         isCollectingCal = false;
         calRawSum = 0;
         calRawCount = 0;
-        unitScale = 10f;
+        unitScale = 1f;
         isCalibrated = false;
+        unitAutoDetected = false;
+        warmUpMaxRaw = 0;
+        warmUpMinRaw = Float.MAX_VALUE;
         lastShakeState = false;
         cardContinuous.setVisibility(View.GONE);
         ((TextView) btnCalibrate).setText("🎯 校准");
