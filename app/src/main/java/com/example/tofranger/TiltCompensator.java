@@ -27,9 +27,12 @@ public class TiltCompensator {
     private float pitchOffsetRad = 0;
     private boolean calibrated = false;
 
-    // Latest values
+    // Latest accelerometer values
     private float latestAccelX, latestAccelY, latestAccelZ;
-    private float latestGyroX, latestGyroY, latestGyroZ;
+
+    // Accelerometer-based pitch (used when gyro is unavailable)
+    private float accelPitchRad = 0;
+    private boolean hasGyro = false;
 
     /**
      * Process accelerometer data (gravity vector).
@@ -50,8 +53,13 @@ public class TiltCompensator {
         float ay = latestAccelY / norm; // Y-axis component
         float az = latestAccelZ / norm; // Z-axis component
 
-        // Pitch from accelerometer (when flat on table: pitch≈0, when vertical: pitch≈π/2)
-        float accelPitch = (float) Math.atan2(ay, az);
+        // Pitch from accelerometer
+        accelPitchRad = (float) Math.atan2(ay, az);
+
+        // If no gyro available, use accel directly (with smoothing)
+        if (!hasGyro) {
+            pitchRad = ALPHA * pitchRad + (1 - ALPHA) * accelPitchRad;
+        }
     }
 
     /**
@@ -59,9 +67,7 @@ public class TiltCompensator {
      * Call this at SENSOR_DELAY_GAME rate.
      */
     public void updateGyroscope(SensorEvent event) {
-        latestGyroX = event.values[0];
-        latestGyroY = event.values[1];
-        latestGyroZ = event.values[2];
+        hasGyro = true;
 
         long now = System.nanoTime();
         if (lastGyroTime == 0) {
@@ -74,23 +80,12 @@ public class TiltCompensator {
 
         if (dt > 0.1f) return; // too large gap, skip
 
-        // Gyro integration (X-axis rotation affects pitch)
+        // Gyro integration (Y-axis rotation affects pitch)
         // Positive gyroY = rotating phone to point upward
-        float gyroPitchRate = latestGyroY;
-
-        // Accelerometer pitch for correction
-        float norm = (float) Math.sqrt(
-                latestAccelX * latestAccelX +
-                latestAccelY * latestAccelY +
-                latestAccelZ * latestAccelZ);
-        if (norm < 0.001f) return;
-
-        float ay = latestAccelY / norm;
-        float az = latestAccelZ / norm;
-        float accelPitch = (float) Math.atan2(ay, az);
+        float gyroPitchRate = event.values[1];
 
         // Complementary filter: fuse gyro (fast) + accel (stable)
-        pitchRad = ALPHA * (pitchRad + gyroPitchRate * dt) + (1 - ALPHA) * accelPitch;
+        pitchRad = ALPHA * (pitchRad + gyroPitchRate * dt) + (1 - ALPHA) * accelPitchRad;
     }
 
     /**

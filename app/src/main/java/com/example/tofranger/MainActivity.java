@@ -32,8 +32,10 @@ import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 
@@ -56,7 +58,7 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
 
     // Statistics
     private DistanceStats stats = new DistanceStats(200);
-    private final ArrayList<Float> rawHistory = new ArrayList<>();
+    private final Deque<Float> rawHistory = new ArrayDeque<>();
     private static final int MAX_HISTORY = 500;
 
     // Sensor
@@ -623,8 +625,8 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
 
         if (filtered > 0 && !displayFrozen && !isLocked) {
             stats.add(filtered);
-            rawHistory.add(rawMm);
-            if (rawHistory.size() > MAX_HISTORY) rawHistory.remove(0);
+            rawHistory.addLast(rawMm);
+            if (rawHistory.size() > MAX_HISTORY) rawHistory.removeFirst();
 
             // Chart
             chartView.addPoint(filtered);
@@ -1071,8 +1073,9 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
 
             FileWriter fw = new FileWriter(file);
             fw.write("index,distance_mm\n");
-            for (int i = 0; i < rawHistory.size(); i++) {
-                fw.write(String.format(Locale.getDefault(), "%d,%.0f\n", i, rawHistory.get(i)));
+            int idx = 0;
+            for (float val : rawHistory) {
+                fw.write(String.format(Locale.getDefault(), "%d,%.0f\n", idx++, val));
             }
 
             // Also export continuous records if any

@@ -1,14 +1,17 @@
 package com.example.tofranger;
 
-import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Deque;
 
 /**
  * Rolling statistics tracker for distance measurements.
  * Maintains min/max/avg/stddev over a sliding window.
+ * Uses ArrayDeque for O(1) add/remove at both ends.
  */
 public class DistanceStats {
 
-    private final ArrayList<Float> window;
+    private final ArrayDeque<Float> window;
     private final int maxSize;
 
     // All-time stats
@@ -24,7 +27,7 @@ public class DistanceStats {
 
     public DistanceStats(int windowSize) {
         this.maxSize = windowSize;
-        this.window = new ArrayList<>(windowSize);
+        this.window = new ArrayDeque<>(windowSize);
     }
 
     public DistanceStats() {
@@ -35,11 +38,9 @@ public class DistanceStats {
     public void add(float mm) {
         if (mm < 0) return;
 
-        // Window
-        window.add(mm);
-        if (window.size() > maxSize) window.remove(0);
+        window.addLast(mm);
+        if (window.size() > maxSize) window.removeFirst();
 
-        // All-time
         allTimeCount++;
         allTimeSum += mm;
         if (mm < allTimeMin) allTimeMin = mm;
@@ -75,22 +76,28 @@ public class DistanceStats {
 
     /** Standard deviation over sliding window */
     public float getStdDev() {
-        if (window.size() < 2) return 0;
+        int size = window.size();
+        if (size < 2) return 0;
         float mean = 0;
         for (float v : window) mean += v;
-        mean /= window.size();
+        mean /= size;
         float sumSq = 0;
-        for (float v : window) sumSq += (v - mean) * (v - mean);
-        return (float) Math.sqrt(sumSq / window.size());
+        for (float v : window) {
+            float d = v - mean;
+            sumSq += d * d;
+        }
+        return (float) Math.sqrt(sumSq / size);
     }
 
     /** Median over sliding window */
     public float getMedian() {
-        if (window.isEmpty()) return 0;
-        float[] sorted = new float[window.size()];
-        for (int i = 0; i < window.size(); i++) sorted[i] = window.get(i);
-        java.util.Arrays.sort(sorted);
-        return sorted[sorted.length / 2];
+        int size = window.size();
+        if (size == 0) return 0;
+        float[] sorted = new float[size];
+        int i = 0;
+        for (float v : window) sorted[i++] = v;
+        Arrays.sort(sorted);
+        return sorted[size / 2];
     }
 
     public int getSampleCount() {
@@ -107,12 +114,17 @@ public class DistanceStats {
 
     /** Trend: positive = moving away, negative = moving closer */
     public float getTrend() {
-        if (window.size() < 10) return 0;
-        int half = window.size() / 2;
+        int size = window.size();
+        if (size < 10) return 0;
+        int half = size / 2;
         float firstHalf = 0, secondHalf = 0;
-        for (int i = 0; i < half; i++) firstHalf += window.get(i);
-        for (int i = half; i < window.size(); i++) secondHalf += window.get(i);
-        return (secondHalf / (window.size() - half)) - (firstHalf / half);
+        int i = 0;
+        for (float v : window) {
+            if (i < half) firstHalf += v;
+            else secondHalf += v;
+            i++;
+        }
+        return (secondHalf / (size - half)) - (firstHalf / half);
     }
 
     public void reset() {

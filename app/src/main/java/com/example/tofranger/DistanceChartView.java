@@ -7,15 +7,20 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.view.View;
 
-import java.util.ArrayList;
-
 /**
  * Custom View that draws a real-time distance history line chart.
+ * Uses a circular buffer and throttled invalidation for performance.
  */
 public class DistanceChartView extends View {
 
-    private final ArrayList<Float> data = new ArrayList<>();
     private static final int MAX_POINTS = 200;
+    private final float[] data = new float[MAX_POINTS];
+    private int head = 0;
+    private int count = 0;
+
+    // Throttled redraw
+    private static final long MIN_REDRAW_INTERVAL_MS = 80; // ~12 fps max
+    private long lastRedrawTime = 0;
 
     private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -52,18 +57,33 @@ public class DistanceChartView extends View {
     }
 
     public void addPoint(float value) {
-        data.add(value);
-        if (data.size() > MAX_POINTS) data.remove(0);
-        postInvalidate();
+        data[head] = value;
+        head = (head + 1) % MAX_POINTS;
+        if (count < MAX_POINTS) count++;
+
+        long now = System.currentTimeMillis();
+        if (now - lastRedrawTime >= MIN_REDRAW_INTERVAL_MS) {
+            lastRedrawTime = now;
+            postInvalidate();
+        }
     }
 
     public void clear() {
-        data.clear();
+        head = 0;
+        count = 0;
+        lastRedrawTime = 0;
         postInvalidate();
     }
 
     public int getPointCount() {
-        return data.size();
+        return count;
+    }
+
+    /** Get value at logical index (0 = oldest) */
+    private float get(int index) {
+        if (index < 0 || index >= count) return 0;
+        int realIndex = (head - count + index + MAX_POINTS) % MAX_POINTS;
+        return data[realIndex];
     }
 
     @Override
@@ -82,10 +102,9 @@ public class DistanceChartView extends View {
         int chartW = w - padL - padR;
         int chartH = h - padT - padB;
 
-        // Background
         canvas.drawColor(Color.TRANSPARENT);
 
-        if (data.size() < 2) {
+        if (count < 2) {
             String msg = "等待数据...";
             float tw = labelPaint.measureText(msg);
             canvas.drawText(msg, (w - tw) / 2f, h / 2f, labelPaint);
@@ -94,12 +113,12 @@ public class DistanceChartView extends View {
 
         // Find min/max
         float min = Float.MAX_VALUE, max = Float.MIN_VALUE;
-        for (float v : data) {
+        for (int i = 0; i < count; i++) {
+            float v = get(i);
             if (v < min) min = v;
             if (v > max) max = v;
         }
 
-        // Add padding to range
         float range = max - min;
         if (range < 10) range = 10;
         float rangePad = range * 0.1f;
@@ -107,7 +126,7 @@ public class DistanceChartView extends View {
         max += rangePad;
         range = max - min;
 
-        // Draw horizontal grid lines (3 lines)
+        // Draw horizontal grid lines
         float textSize = labelPaint.getTextSize();
         for (int i = 0; i <= 3; i++) {
             float y = padT + (chartH * i / 3f);
@@ -119,17 +138,14 @@ public class DistanceChartView extends View {
             canvas.drawText(label, padL - tw - dp(4), y + textSize / 3, labelPaint);
         }
 
-        // Map data to screen coordinates
-        float xStep = chartW / (float) (data.size() - 1);
+        float xStep = chartW / (float) (count - 1);
 
         // Draw filled area
         Path fillPath = new Path();
-        fillPath.moveTo(padL, padT + chartH); // bottom-left
-
         float lastX = 0, lastY = 0;
-        for (int i = 0; i < data.size(); i++) {
+        for (int i = 0; i < count; i++) {
             float x = padL + i * xStep;
-            float normalized = (data.get(i) - min) / range;
+            float normalized = (get(i) - min) / range;
             float y = padT + chartH * (1 - normalized);
 
             if (i == 0) fillPath.moveTo(x, y);
@@ -138,8 +154,6 @@ public class DistanceChartView extends View {
             lastX = x;
             lastY = y;
         }
-
-        // Close fill path
         fillPath.lineTo(lastX, padT + chartH);
         fillPath.lineTo(padL, padT + chartH);
         fillPath.close();
@@ -147,9 +161,9 @@ public class DistanceChartView extends View {
 
         // Draw line
         Path linePath = new Path();
-        for (int i = 0; i < data.size(); i++) {
+        for (int i = 0; i < count; i++) {
             float x = padL + i * xStep;
-            float normalized = (data.get(i) - min) / range;
+            float normalized = (get(i) - min) / range;
             float y = padT + chartH * (1 - normalized);
 
             if (i == 0) linePath.moveTo(x, y);
@@ -158,13 +172,11 @@ public class DistanceChartView extends View {
         canvas.drawPath(linePath, linePaint);
 
         // Draw last point dot
-        if (data.size() > 0) {
-            float lastVal = data.get(data.size() - 1);
-            float x = padL + (data.size() - 1) * xStep;
-            float normalized = (lastVal - min) / range;
-            float y = padT + chartH * (1 - normalized);
-            canvas.drawCircle(x, y, dp(4), dotPaint);
-        }
+        float lastVal = get(count - 1);
+        float x = padL + (count - 1) * xStep;
+        float normalized = (lastVal - min) / range;
+        float y = padT + chartH * (1 - normalized);
+        canvas.drawCircle(x, y, dp(4), dotPaint);
     }
 
     private int dp(int value) {
