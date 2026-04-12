@@ -3,6 +3,9 @@ package com.example.tofranger;
 /**
  * Multi-zone weighted fusion for 8x8 or 4x4 dToF sensor data.
  * Center zones get higher weight since the camera typically focuses there.
+ *
+ * Note: Currently reserved for future multi-zone ToF sensor support.
+ * Single-point ToF sensors (VL53L0X/L1X) don't produce zone arrays.
  */
 public class ZoneFusion {
 

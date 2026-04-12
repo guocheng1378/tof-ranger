@@ -1,7 +1,10 @@
 # ToF Ranger ProGuard Rules
 
-# Keep sensor-related classes
+# Keep all app classes (small app, no need to strip)
 -keep class com.example.tofranger.** { *; }
 
-# Keep TTS
--keep class android.speech.tts.** { *; }
+# Keep sensor-related Android classes
+-keep class android.hardware.** { *; }
+
+# Suppress warnings for optional dependencies
+-dontwarn android.speech.tts.**

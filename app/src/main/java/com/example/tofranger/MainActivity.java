@@ -2,7 +2,9 @@ package com.example.tofranger;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -12,6 +14,7 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -32,6 +35,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -40,7 +44,9 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements SensorEventListener {
 
-    private static final int SENSOR_TYPE_TOF = 33171040;
+    // 小米自定义 ToF 传感器类型（非 AOSP 标准，由 MIUI/HyperOS 定义）
+    // 不同 ROM 可能不同，因此 findTofSensor() 还会用 name 匹配做兜底
+    private static final int SENSOR_TYPE_MIUI_TOF = 33171040;
 
     // Unit modes
     private static final int UNIT_MM = 0, UNIT_CM = 1, UNIT_M = 2, UNIT_INCH = 3;
@@ -59,6 +65,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Sensor
     private SensorManager sensorManager;
     private Sensor tofSensor;
+    private Sensor accelerometer;
+    private Sensor gyroscope;
     private boolean isProximityFallback = false;
 
     // 单位换算：传感器原始值 × unitScale = mm
@@ -90,6 +98,11 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Vibration
     private Vibrator vibrator;
 
+    // Shake detection + Tilt compensation
+    private ShakeDetector shakeDetector;
+    private TiltCompensator tiltCompensator;
+    private boolean lastShakeState = false;
+
     // UI
     private TextView tvDistance, tvUnit, tvRawInfo, tvStatus;
     private TextView tvStats, tvHz, tvHoldLabel, tvSensorInfo;
@@ -97,6 +110,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private TextView tvLockedInfo;
     private TextView tvContinuousInfo;
     private TextView tvSensorDebug;
+    private TextView tvHorizontalInfo;
 
     // Buttons
     private View btnHold, btnReset, btnUnit;
@@ -138,6 +152,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         } else {
             vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         }
+
+        // Shake + Tilt
+        shakeDetector = new ShakeDetector();
+        tiltCompensator = new TiltCompensator();
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.setBackgroundColor(C_BG);
@@ -224,6 +242,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvRawInfo.setPadding(0, dp(4), 0, 0);
         distCard.addView(tvRawInfo);
 
+        tvHorizontalInfo = new TextView(this);
+        tvHorizontalInfo.setTextSize(11);
+        tvHorizontalInfo.setTextColor(C_BLUE);
+        tvHorizontalInfo.setGravity(Gravity.CENTER);
+        tvHorizontalInfo.setPadding(0, dp(4), 0, 0);
+        tvHorizontalInfo.setVisibility(View.GONE);
+        distCard.addView(tvHorizontalInfo);
+
         tvLockedInfo = new TextView(this);
         tvLockedInfo.setTextSize(11);
         tvLockedInfo.setTextColor(C_BLUE);
@@ -252,9 +278,13 @@ public class MainActivity extends Activity implements SensorEventListener {
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setGravity(Gravity.CENTER);
         btnCapture = makeSmallButton("📸 锁定", C_BLUE);
+        btnCapture.setContentDescription("锁定当前距离");
         btnCalibrate = makeSmallButton("🎯 校准", C_GREEN);
+        btnCalibrate.setContentDescription("校准传感器");
         btnContinuous = makeSmallButton("⏺ 连测", 0xFF8B5CF6);
+        btnContinuous.setContentDescription("连续测量");
         btnExportCSV = makeSmallButton("📄 导出", C_ORANGE);
+        btnExportCSV.setContentDescription("导出CSV文件");
         actionRow.addView(btnCapture, lp(0, dp(38), 1));
         actionRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
         actionRow.addView(btnCalibrate, lp(0, dp(38), 1));
@@ -289,8 +319,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.CENTER);
         btnHold = makeButton("⏸ 暂停", C_WARN);
+        btnHold.setContentDescription("暂停测量");
         btnReset = makeButton("🔄 重置", C_BLUE);
+        btnReset.setContentDescription("重置所有数据");
         btnUnit = makeButton("📏 cm", 0xFF8B5CF6);
+        btnUnit.setContentDescription("切换单位");
         btnRow.addView(btnHold, lp(0, dp(40), 1));
         btnRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
         btnRow.addView(btnReset, lp(0, dp(40), 1));
@@ -320,6 +353,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         findTofSensor();
+        findAdditionalSensors();
     }
 
     private void findTofSensor() {
@@ -330,7 +364,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         for (Sensor s : all) {
             String n = s.getName().toLowerCase();
             int type = s.getType();
-            if ((type == SENSOR_TYPE_TOF || n.contains("tof") || n.contains("vl53")) && tofSensor == null) {
+            if ((type == SENSOR_TYPE_MIUI_TOF || n.contains("tof") || n.contains("vl53")) && tofSensor == null) {
                 tofSensor = s;
                 name = s.getName();
                 break;
@@ -347,11 +381,20 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvSensorInfo.setText(name);
     }
 
+    private void findAdditionalSensors() {
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         if (tofSensor != null)
             sensorManager.registerListener(this, tofSensor, SensorManager.SENSOR_DELAY_GAME);
+        if (accelerometer != null)
+            sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME);
+        if (gyroscope != null)
+            sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override
@@ -363,8 +406,28 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override
     public void onSensorChanged(SensorEvent event) {
         int type = event.sensor.getType();
-        if (type != SENSOR_TYPE_TOF && type != Sensor.TYPE_PROXIMITY) return;
+
+        // Route accelerometer → ShakeDetector + TiltCompensator
+        if (type == Sensor.TYPE_ACCELEROMETER) {
+            shakeDetector.update(event);
+            tiltCompensator.updateAccelerometer(event);
+            if (lastShakeState != shakeDetector.isShaking()) {
+                lastShakeState = shakeDetector.isShaking();
+                runOnUiThread(() -> updateShakeStatus());
+            }
+            return;
+        }
+
+        // Route gyroscope → TiltCompensator
+        if (type == Sensor.TYPE_GYROSCOPE) {
+            tiltCompensator.updateGyroscope(event);
+            return;
+        }
+
+        // Distance sensor
+        if (type != SENSOR_TYPE_MIUI_TOF && type != Sensor.TYPE_PROXIMITY) return;
         if (isHolding) return;
+        if (shakeDetector.isShaking()) return;
 
         eventCount++;
         stats.tickHz();
@@ -376,8 +439,15 @@ public class MainActivity extends Activity implements SensorEventListener {
         float raw = event.values[0];
         lastRawSensorValue = raw;
 
-        // 8191 = VL53Lx 无信号
-        if (raw >= 8190) {
+        // 动态溢出阈值：优先用 API 量程，兜底 8190（VL53L0X 溢出值）
+        float overflowThreshold;
+        if (tofSensor != null && tofSensor.getMaximumRange() > 0) {
+            overflowThreshold = tofSensor.getMaximumRange() * unitScale;
+        } else {
+            overflowThreshold = 8190;
+        }
+
+        if (raw * unitScale >= overflowThreshold) {
             if (lastFilteredMm > 0) {
                 updateDisplay(raw, lastFilteredMm, false);
             } else {
@@ -421,6 +491,15 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
+    private void updateShakeStatus() {
+        if (shakeDetector.isShaking()) {
+            tvStatus.setText("📵 检测到抖动，暂停更新");
+            tvStatus.setTextColor(C_WARN);
+        } else {
+            tvStatus.setTextColor(C_DIM);
+        }
+    }
+
     private void checkContinuous(float filtered) {
         if (!continuousMode) return;
         if (lastStableValue < 0) {
@@ -458,6 +537,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             tvHoldLabel.setTextColor(noSignal ? C_ERR : C_ACCENT);
             tvQuality.setText("");
             tvConfidenceBar.setText("");
+            tvHorizontalInfo.setVisibility(View.GONE);
             updateDebug(rawSensorValue);
             return;
         }
@@ -479,6 +559,23 @@ public class MainActivity extends Activity implements SensorEventListener {
         // 显示原始值和换算后的值
         tvRawInfo.setText(String.format(Locale.getDefault(),
                 "传感器: %.1f × %.2f = %.0f mm", rawSensorValue, unitScale, filteredMm));
+
+        // 倾斜补偿：仅对 ToF 传感器有效（Proximity 降级模式下不显示）
+        if (!isProximityFallback && tiltCompensator != null) {
+            float pitchDeg = Math.abs(tiltCompensator.getPitchDegrees());
+            if (pitchDeg > 10) {
+                float hDist = tiltCompensator.getHorizontalDistance(filteredMm);
+                float hDisplay = convertUnit(hDist, currentUnit);
+                tvHorizontalInfo.setText(String.format(Locale.getDefault(),
+                        "📐 %s · 水平: %s %s",
+                        tiltCompensator.getTiltQuality(),
+                        fmt(hDisplay, currentUnit),
+                        UNIT_LABELS[currentUnit]));
+                tvHorizontalInfo.setVisibility(View.VISIBLE);
+            } else {
+                tvHorizontalInfo.setVisibility(View.GONE);
+            }
+        }
 
         // Quality
         float stdDev = stats.getStdDev();
@@ -520,7 +617,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (isProximityFallback) {
             tvStatus.setText("⚠ 降级 Proximity");
             tvStatus.setTextColor(C_WARN);
-        } else {
+        } else if (!shakeDetector.isShaking()) {
             tvStatus.setTextColor(C_DIM);
         }
     }
@@ -545,12 +642,10 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private void startCalibration() {
         if (isCollectingCal) {
-            // 正在校准 → 完成
             finishCalibration();
             return;
         }
 
-        // 弹出输入框：让用户输入已知距离
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("🎯 校准单位换算");
 
@@ -578,9 +673,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (text.isEmpty()) return;
             try {
                 float knownCm = Float.parseFloat(text);
-                float knownMm = knownCm * 10f; // 用户输入的是 cm
+                float knownMm = knownCm * 10f;
 
-                // 开始采集原始值
                 calRawSum = 0;
                 calRawCount = 0;
                 isCollectingCal = true;
@@ -588,7 +682,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 ((TextView) btnCalibrate).setText("⏳ 采集中");
                 setBackgroundTint(btnCalibrate, C_WARN);
 
-                // 2秒后自动完成校准
                 tvHoldLabel.postDelayed(() -> {
                     if (isCollectingCal) {
                         finishCalibrationWith(knownMm);
@@ -603,9 +696,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     private void finishCalibration() {
-        // 如果用户手动点了校准按钮停止
         if (calRawCount > 0 && lastFilteredMm > 0) {
-            // 用最近的滤波值作为已知距离
             finishCalibrationWith(lastFilteredMm);
         }
     }
@@ -614,7 +705,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         isCollectingCal = false;
 
         if (calRawCount < 5) {
-            // 采集数据不够
             ((TextView) btnCalibrate).setText("🎯 校准");
             setBackgroundTint(btnCalibrate, C_GREEN);
             return;
@@ -622,14 +712,11 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         float avgRaw = calRawSum / calRawCount;
 
-        // unitScale = knownMm / avgRaw
-        // 例如：已知1000mm，传感器平均返回100.5 → scale = 1000/100.5 = 9.95
         if (avgRaw > 0) {
             unitScale = knownMm / avgRaw;
             isCalibrated = true;
         }
 
-        // 重置滤波器
         primaryFilter.reset();
         stats.reset();
         warmUpCount = 0;
@@ -642,7 +729,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         setBackgroundTint(btnCalibrate, C_GOOD);
         vibrate(100);
 
-        // 2秒后恢复按钮
         btnCalibrate.postDelayed(() -> {
             ((TextView) btnCalibrate).setText("🎯 校准");
             setBackgroundTint(btnCalibrate, C_GREEN);
@@ -668,6 +754,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void resetAll() {
         stats.reset();
         primaryFilter.reset();
+        shakeDetector.reset();
+        tiltCompensator.reset();
         eventCount = 0;
         lastFilteredMm = -1;
         lastRawSensorValue = -1;
@@ -682,6 +770,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         calRawCount = 0;
         unitScale = 10f;
         isCalibrated = false;
+        lastShakeState = false;
         cardContinuous.setVisibility(View.GONE);
         ((TextView) btnCalibrate).setText("🎯 校准");
         setBackgroundTint(btnCalibrate, C_GREEN);
@@ -721,7 +810,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                 File dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
                 if (dir == null) dir = getFilesDir();
                 FileOutputStream fos = new FileOutputStream(new File(dir, fn));
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                // API 31+ 使用 Bitmap.CompressFormat.PNG (非废弃版本)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                } else {
+                    @SuppressWarnings("deprecation")
+                    Bitmap.CompressFormat fmt = Bitmap.CompressFormat.PNG;
+                    bitmap.compress(fmt, 100, fos);
+                }
                 fos.close();
             } catch (Exception ignored) {}
         });
@@ -742,8 +838,56 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
+    private static final int REQUEST_CREATE_CSV = 1001;
+
     private void exportCSV() {
         if (stats.getSampleCount() == 0) return;
+
+        String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        String fileName = "tof_data_" + ts + ".csv";
+
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/csv");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+
+        try {
+            startActivityForResult(intent, REQUEST_CREATE_CSV);
+        } catch (ActivityNotFoundException e) {
+            // 无文件管理器可用，fallback 到 app 私有目录
+            exportCSVToAppDir();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CREATE_CSV && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) writeCSVToUri(uri);
+        }
+    }
+
+    private void writeCSVToUri(Uri uri) {
+        try {
+            OutputStream os = getContentResolver().openOutputStream(uri);
+            if (os == null) return;
+            FileWriter fw = new FileWriter(os.getFD());
+            fw.write("timestamp,distance_mm\n");
+            if (!continuousRecords.isEmpty()) {
+                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+                for (MeasurementRecord rec : continuousRecords) {
+                    fw.write(String.format(Locale.getDefault(), "%s,%.1f\n",
+                            sdf.format(new Date(rec.timestamp)), rec.distanceMm));
+                }
+            }
+            fw.close();
+            vibrate(100);
+        } catch (IOException ignored) {}
+    }
+
+    private void exportCSVToAppDir() {
         try {
             String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
             File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
@@ -767,7 +911,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
         } else {
-            vibrator.vibrate(ms);
+            @SuppressWarnings("deprecation")
+            Vibrator v = vibrator;
+            v.vibrate(ms);
         }
     }
 
