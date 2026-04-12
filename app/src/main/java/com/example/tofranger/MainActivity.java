@@ -122,7 +122,7 @@ public class MainActivity extends Activity implements SensorEventListener, TextT
     private View btnCapture, btnArea, btnContinuous, btnTTS, btnExportCSV;
 
     // Card refs for show/hide
-    private View cardMultiTarget, cardTilt, cardArea, cardContinuous;
+    private LinearLayout cardMultiTarget, cardTilt, cardArea, cardContinuous;
 
     // Colors
     private static final int C_BG = 0xFF0A0A1A;
