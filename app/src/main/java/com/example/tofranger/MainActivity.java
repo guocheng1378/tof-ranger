@@ -313,7 +313,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         cardContinuous.addView(tvContinuousInfo);
         // 可滚动的测量列表
         ScrollView continuousScroll = new ScrollView(this);
-        continuousScroll.setMaxHeight(dp(200));
         continuousScroll.setPadding(0, dp(4), 0, 0);
         listContinuous = new LinearLayout(this);
         listContinuous.setOrientation(LinearLayout.VERTICAL);
