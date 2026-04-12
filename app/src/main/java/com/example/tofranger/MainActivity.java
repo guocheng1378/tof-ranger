@@ -497,9 +497,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         // ====== 自动单位检测（warm-up 阶段）======
         if (warmUpCount < WARM_UP_SAMPLES) {
             warmUpCount++;
-            if (raw > warmUpMaxRaw) warmUpMaxRaw = raw;
-            if (raw > 0 && raw < warmUpMinRaw) warmUpMinRaw = raw;
-
+            // 跳过溢出标记值（8191 是 VL53L1X 的 out-of-range 标记）
+            if (raw < 8190) {
+                if (raw > warmUpMaxRaw) warmUpMaxRaw = raw;
+                if (raw > 0 && raw < warmUpMinRaw) warmUpMinRaw = raw;
+            }
             // warm-up 结束时做单位判断
             if (warmUpCount == WARM_UP_SAMPLES && !unitAutoDetected) {
                 autoDetectUnitScale();
@@ -508,12 +510,26 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         // ====== 溢出/无效值判断 ======
-        // 用传感器 API 的最大量程（SI 单位，即 mm）作为上界
+        // 注意：部分设备 getMaximumRange() 返回值不可靠（如小米17PM返回1mm）
+        // 策略：用传感器已知量程兜底，而非盲目信任 API
         float overflowThresholdMm;
-        if (tofSensor != null && tofSensor.getMaximumRange() > 0) {
+        if (tofSensor != null && tofSensor.getMaximumRange() > 100) {
+            // API 返回合理量程（>100mm），直接使用
             overflowThresholdMm = tofSensor.getMaximumRange();
         } else {
-            overflowThresholdMm = 8190; // VL53L0X 典型溢出值
+            // API 返回不合理值，按传感器类型推测量程
+            if (tofSensor != null) {
+                String sensorName = tofSensor.getName().toLowerCase(Locale.ROOT);
+                if (sensorName.contains("vl53l0")) {
+                    overflowThresholdMm = 1200; // VL53L0X 量程 1.2m
+                } else if (sensorName.contains("vl53l1") || sensorName.contains("vl53lx")) {
+                    overflowThresholdMm = 4000; // VL53L1X 量程 4m
+                } else {
+                    overflowThresholdMm = 4000; // 其他 ToF 默认 4m
+                }
+            } else {
+                overflowThresholdMm = 4000;
+            }
         }
 
         // 换算: 传感器原始值 × unitScale = mm
@@ -723,7 +739,15 @@ public class MainActivity extends Activity implements SensorEventListener {
      * - 如果 maxRaw >= 500 → 大概率是 mm 单位 → unitScale = 1
      */
     private void autoDetectUnitScale() {
-        // 用 API 返回的量程做辅助判断
+        // 如果 warm-up 全是溢出值，maxRaw 可能还是 0
+        if (warmUpMaxRaw <= 0) {
+            // 保守默认：VL53L1X 输出 mm
+            unitScale = 1f;
+            unitAutoDetected = true;
+            return;
+        }
+
+        // 用 API 返回的量程做辅助判断（仅当量程合理时）
         float apiRange = tofSensor != null ? tofSensor.getMaximumRange() : 0;
 
         if (warmUpMaxRaw < 500 && apiRange > 500) {
