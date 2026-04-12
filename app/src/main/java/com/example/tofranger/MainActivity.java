@@ -35,7 +35,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private boolean isHolding = false;
 
     // Signal processing
-    private DistanceFilter primaryFilter = new DistanceFilter(11, 0.08f, 150f);
+    private DistanceFilter primaryFilter = new DistanceFilter(11, 0.08f, 300f, 2f, 4000f);
     private DistanceFilter[] targetFilters;
     private static final int MAX_TARGETS = 4;
 

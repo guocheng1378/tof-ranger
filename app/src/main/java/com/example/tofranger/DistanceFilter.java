@@ -28,30 +28,38 @@ public class DistanceFilter {
     private float lastFiltered = -1;
     private float maxJumpMm;
     private float deadZoneMm;
+    private float maxRangeMm; // sensor max range, readings at this value are invalid
 
     /**
      * @param windowSize   median window (9-15 recommended)
      * @param alpha        EMA smoothing factor (0.05-0.12 recommended, lower=smoother)
      * @param maxJumpMm    max allowed jump per sample in mm
      * @param deadZoneMm   ignore changes smaller than this (mm), 0 = disabled
+     * @param maxRangeMm   sensor max range, readings at/above this are invalid
      */
-    public DistanceFilter(int windowSize, float alpha, float maxJumpMm, float deadZoneMm) {
+    public DistanceFilter(int windowSize, float alpha, float maxJumpMm, float deadZoneMm, float maxRangeMm) {
         this.windowSize = windowSize;
         this.medianBuffer = new int[windowSize];
         this.alpha = alpha;
         this.maxJumpMm = maxJumpMm;
         this.deadZoneMm = deadZoneMm;
+        this.maxRangeMm = maxRangeMm;
         Arrays.fill(medianBuffer, -1);
+    }
+
+    /** Convenience: default maxRange=4000mm */
+    public DistanceFilter(int windowSize, float alpha, float maxJumpMm, float deadZoneMm) {
+        this(windowSize, alpha, maxJumpMm, deadZoneMm, 4000f);
     }
 
     /** Convenience: no dead zone */
     public DistanceFilter(int windowSize, float alpha, float maxJumpMm) {
-        this(windowSize, alpha, maxJumpMm, 2f);
+        this(windowSize, alpha, maxJumpMm, 2f, 4000f);
     }
 
-    /** Default: window=11, alpha=0.08, maxJump=150mm, deadZone=2mm */
+    /** Default: window=11, alpha=0.08, maxJump=150mm, deadZone=2mm, maxRange=4000mm */
     public DistanceFilter() {
-        this(11, 0.08f, 150f, 2f);
+        this(11, 0.08f, 150f, 2f, 4000f);
     }
 
     /**
@@ -60,9 +68,26 @@ public class DistanceFilter {
     public float filter(float rawMm) {
         if (rawMm < 0) return -1;
 
+        // Reject max-range readings — sensor lost signal, returned boundary value
+        if (maxRangeMm > 0 && rawMm >= maxRangeMm) {
+            return emaInitialized ? ema2 : -1;
+        }
+
+        // Reject readings very close to max range (>95%) — likely unreliable
+        if (maxRangeMm > 0 && rawMm > maxRangeMm * 0.95f) {
+            return emaInitialized ? ema2 : -1;
+        }
+
         int rawInt = Math.round(rawMm);
 
-        // Stage 1: Fill median buffer
+        // Stage 1: Spike rejection — if raw jumps too much, reject it
+        if (lastFiltered > 0 && maxJumpMm > 0) {
+            if (Math.abs(rawMm - lastFiltered) > maxJumpMm) {
+                return emaInitialized ? ema2 : lastFiltered;
+            }
+        }
+
+        // Stage 2: Fill median buffer (only with non-spike values)
         medianBuffer[medianPos] = rawInt;
         medianPos = (medianPos + 1) % windowSize;
         if (medianPos == 0) medianFilled = true;
@@ -71,14 +96,6 @@ public class DistanceFilter {
         if (count < 3) {
             lastFiltered = rawMm;
             return initEma(rawMm);
-        }
-
-        // Stage 2: Spike rejection — if raw jumps too much, reject it
-        if (lastFiltered > 0 && maxJumpMm > 0) {
-            if (Math.abs(rawMm - lastFiltered) > maxJumpMm) {
-                // Spike detected — keep current output
-                return emaInitialized ? ema2 : lastFiltered;
-            }
         }
 
         // Stage 3: Trimmed median — sort, take middle 50%, average them
