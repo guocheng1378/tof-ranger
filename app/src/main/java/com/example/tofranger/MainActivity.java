@@ -124,6 +124,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     // Cards
     private LinearLayout cardContinuous;
+    private LinearLayout listContinuous;
 
     // Colors
     private static final int C_BG = 0xFF0A0A1A;
@@ -305,9 +306,19 @@ public class MainActivity extends Activity implements SensorEventListener {
         cardContinuous = makeCard();
         cardContinuous.setPadding(dp(14), dp(12), dp(14), dp(12));
         cardContinuous.setVisibility(View.GONE);
-        cardContinuous.addView(makeLabel("⏺ 连续测量"));
+        cardContinuous.addView(makeLabel("⏺ 连续测量记录"));
         tvContinuousInfo = makeBodyText();
+        tvContinuousInfo.setTextSize(10);
+        tvContinuousInfo.setTextColor(C_DIM);
         cardContinuous.addView(tvContinuousInfo);
+        // 可滚动的测量列表
+        ScrollView continuousScroll = new ScrollView(this);
+        continuousScroll.setMaxHeight(dp(200));
+        continuousScroll.setPadding(0, dp(4), 0, 0);
+        listContinuous = new LinearLayout(this);
+        listContinuous.setOrientation(LinearLayout.VERTICAL);
+        continuousScroll.addView(listContinuous);
+        cardContinuous.addView(continuousScroll);
         root.addView(cardContinuous);
         root.addView(makeGap(dp(12)));
 
@@ -586,13 +597,28 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (System.currentTimeMillis() - lastStableTime > STABLE_THRESHOLD_MS) {
                 if (continuousRecords.isEmpty() ||
                         Math.abs(continuousRecords.get(continuousRecords.size() - 1).distanceMm - filtered) > 20) {
-                    continuousRecords.add(new MeasurementRecord(filtered, System.currentTimeMillis()));
+                    long now = System.currentTimeMillis();
+                    continuousRecords.add(new MeasurementRecord(filtered, now));
                     vibrate(50);
+
                     String u = UNIT_LABELS[currentUnit];
                     String valStr = fmt(convertUnit(filtered, currentUnit), currentUnit);
-                    tvContinuousInfo.post(() -> tvContinuousInfo.setText(
-                            String.format(Locale.getDefault(), "已记录 %d 个点\n最近: %s %s",
-                                    continuousRecords.size(), valStr, u)));
+                    String timeStr = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(now));
+
+                    tvContinuousInfo.post(() -> {
+                        tvContinuousInfo.setText(String.format(Locale.getDefault(),
+                                "已记录 %d 个点", continuousRecords.size()));
+                        // 在列表顶部插入新条目（最新的在上面）
+                        TextView entry = new TextView(this);
+                        entry.setText(String.format(Locale.getDefault(),
+                                "#%d  %s  %s %s",
+                                continuousRecords.size(), timeStr, valStr, u));
+                        entry.setTextSize(11);
+                        entry.setTextColor(C_TEXT);
+                        entry.setTypeface(Typeface.MONOSPACE);
+                        entry.setPadding(0, dp(3), 0, dp(3));
+                        listContinuous.addView(entry, 0);
+                    });
                 }
                 lastStableValue = filtered;
                 lastStableTime = System.currentTimeMillis();
@@ -838,6 +864,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         lockedDistanceMm = -1;
         continuousMode = false;
         continuousRecords.clear();
+        listContinuous.removeAllViews();
         lastStableValue = -1;
         warmUpCount = 0;
         isCollectingCal = false;
@@ -902,6 +929,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         continuousMode = !continuousMode;
         if (continuousMode) {
             continuousRecords.clear();
+            listContinuous.removeAllViews();
             lastStableValue = -1;
             cardContinuous.setVisibility(View.VISIBLE);
             ((TextView) btnContinuous).setText("⏹ 停止");
