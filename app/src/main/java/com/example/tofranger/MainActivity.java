@@ -74,16 +74,14 @@ public class MainActivity extends Activity implements SensorEventListener {
     private int detectedTofType = 0; // 实际探测到的传感器 type
 
     // 单位换算：传感器原始值 × unitScale = mm
-    // 启动后自动根据前几个样本检测
-    private float unitScale = 1f; // 默认 1（先假设 mm），自动校准
+    // VL53L1X / VL53L0X 原生输出就是 mm，不需要换算
+    // 保留校准功能让用户手动修正
+    private float unitScale = 1f;
     private boolean isCalibrated = false;
-    private boolean unitAutoDetected = false;
 
-    // Warm-up + 自动单位检测
+    // Warm-up（跳过前几个不稳定样本）
     private int warmUpCount = 0;
-    private static final int WARM_UP_SAMPLES = 5;
-    private float warmUpMaxRaw = 0;
-    private float warmUpMinRaw = Float.MAX_VALUE;
+    private static final int WARM_UP_SAMPLES = 3;
 
     // Lock
     private float lockedDistanceMm = -1;
@@ -494,18 +492,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         float raw = event.values[0];
         lastRawSensorValue = raw;
 
-        // ====== 自动单位检测（warm-up 阶段）======
+        // ====== Warm-up：跳过前几个不稳定样本 ======
         if (warmUpCount < WARM_UP_SAMPLES) {
             warmUpCount++;
-            // 跳过溢出标记值（8191 是 VL53L1X 的 out-of-range 标记）
-            if (raw < 8190) {
-                if (raw > warmUpMaxRaw) warmUpMaxRaw = raw;
-                if (raw > 0 && raw < warmUpMinRaw) warmUpMinRaw = raw;
-            }
-            // warm-up 结束时做单位判断
-            if (warmUpCount == WARM_UP_SAMPLES && !unitAutoDetected) {
-                autoDetectUnitScale();
-            }
             return;
         }
 
@@ -714,60 +703,13 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvSensorDebug.setText(String.format(Locale.getDefault(),
                 "传感器: %s (type=%d)\n" +
                 "API量程: %.0f mm  API分辨率: %.4f\n" +
-                "换算系数: %.4f %s  单位自动检测: %s\n" +
-                "warm-up maxRaw: %.2f  minRaw: %.2f\n" +
+                "换算系数: %.4f %s\n" +
                 "最近原始值: %.2f",
                 tofSensor != null ? tofSensor.getName() : "null",
                 detectedTofType,
                 apiRange, apiRes,
-                unitScale, isCalibrated ? "(已校准)" : "(自动)",
-                unitAutoDetected ? "已完成" : "未完成",
-                warmUpMaxRaw, warmUpMinRaw,
+                unitScale, isCalibrated ? "(已校准)" : "(固定×1)",
                 rawSensorValue));
-    }
-
-    // ========== 自动单位检测 ==========
-
-    /**
-     * 根据 warm-up 阶段采集的样本自动判断传感器输出单位。
-     *
-     * 逻辑：
-     * - VL53L1X 量程 4000mm，正常读数 50~4000，传感器直接输出 mm
-     * - VL53L0X 量程 1200mm，正常读数 50~1200，传感器直接输出 mm
-     * - 如果传感器输出 cm，同样距离值会小 10 倍（如 1m → 100）
-     * - 如果 maxRaw < 500 → 很可能是 cm 单位 → unitScale = 10
-     * - 如果 maxRaw >= 500 → 大概率是 mm 单位 → unitScale = 1
-     */
-    private void autoDetectUnitScale() {
-        // 如果 warm-up 全是溢出值，maxRaw 可能还是 0
-        if (warmUpMaxRaw <= 0) {
-            // 保守默认：VL53L1X 输出 mm
-            unitScale = 1f;
-            unitAutoDetected = true;
-            return;
-        }
-
-        // 用 API 返回的量程做辅助判断（仅当量程合理时）
-        float apiRange = tofSensor != null ? tofSensor.getMaximumRange() : 0;
-
-        if (warmUpMaxRaw < 500 && apiRange > 500) {
-            // API 说量程 >500mm，但实际读数 <500 → 传感器输出 cm
-            unitScale = 10f;
-        } else if (warmUpMaxRaw >= 500) {
-            // 读数已经 >=500，传感器输出 mm
-            unitScale = 1f;
-        } else if (apiRange > 0 && apiRange <= 100) {
-            // API 返回的量程很小（cm 级）→ 传感器输出 cm
-            unitScale = 10f;
-        } else if (warmUpMaxRaw > 100) {
-            // 读数 > 100，大概率是 mm
-            unitScale = 1f;
-        } else {
-            // 保守默认：mm
-            unitScale = 1f;
-        }
-
-        unitAutoDetected = true;
     }
 
     // ========== 校准 ==========
@@ -902,9 +844,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         calRawCount = 0;
         unitScale = 1f;
         isCalibrated = false;
-        unitAutoDetected = false;
-        warmUpMaxRaw = 0;
-        warmUpMinRaw = Float.MAX_VALUE;
         lastShakeState = false;
         cardContinuous.setVisibility(View.GONE);
         ((TextView) btnCalibrate).setText("🎯 校准");
