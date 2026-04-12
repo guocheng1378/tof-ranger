@@ -40,6 +40,9 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private static final int SENSOR_TYPE_TOF = 33171040;
 
+    // VL53Lx 传感器固定参数（不依赖 getMaximumRange，它经常返回0）
+    private static final float VL53LX_DEFAULT_MAX_RANGE_MM = 4000f;
+
     // Unit modes
     private static final int UNIT_MM = 0, UNIT_CM = 1, UNIT_M = 2, UNIT_INCH = 3;
     private static final String[] UNIT_LABELS = {"mm", "cm", "m", "in"};
@@ -48,23 +51,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     // State
     private boolean isHolding = false;
 
-    // Signal processing — 轻量滤波，减少滞后
-    private DistanceFilter primaryFilter = new DistanceFilter(5, 0.4f, 800f, 4000f);
+    // Signal processing — 不做范围限制，不做尖峰抑制（VL53Lx返回8191表示无信号，靠值本身判断）
+    private DistanceFilter primaryFilter;
 
-    // Statistics (sliding window)
+    // Statistics
     private DistanceStats stats = new DistanceStats(100);
 
     // Sensor
     private SensorManager sensorManager;
     private Sensor tofSensor;
     private boolean isProximityFallback = false;
-    private float sensorMaxRange = 4000f; // mm, 从传感器API获取
-    private float sensorResolution = 1f;  // mm
-    private boolean sensorValuesInMm = true; // 自动检测
-
-    // Shake detection
-    private ShakeDetector shakeDetector = new ShakeDetector();
-    private boolean displayFrozen = false;
+    private boolean sensorOutputsCm = false; // VL53Lx 输出单位是 cm
 
     // Warm-up
     private int warmUpCount = 0;
@@ -80,7 +77,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private float lastStableValue = -1;
     private long lastStableTime = 0;
     private static final long STABLE_THRESHOLD_MS = 1500;
-    private static final float STABLE_RANGE_MM = 10;
+    private static final float STABLE_RANGE_MM = 15;
 
     // Vibration
     private Vibrator vibrator;
@@ -91,7 +88,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private TextView tvQuality, tvConfidenceBar;
     private TextView tvLockedInfo;
     private TextView tvContinuousInfo;
-    private TextView tvSensorDebug; // 传感器诊断
+    private TextView tvSensorDebug;
 
     // Buttons
     private View btnHold, btnReset, btnUnit;
@@ -119,18 +116,15 @@ public class MainActivity extends Activity implements SensorEventListener {
     private long lastUiUpdate = 0;
     private int eventCount = 0;
     private float lastFiltered = -1;
-    private float lastRawMm = -1;
-
-    // 自动检测：记录原始值范围
-    private float observedMin = Float.MAX_VALUE;
-    private float observedMax = 0;
-    private int detectCount = 0;
-    private boolean unitDetected = false;
+    private float lastValidRawMm = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().getDecorView().setBackgroundColor(C_BG);
+
+        // 创建滤波器：不做范围限制（maxJump=0, maxRange=0）
+        primaryFilter = new DistanceFilter(5, 0.5f, 0, 0);
 
         // Init vibrator
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -165,10 +159,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvSensorInfo.setTextSize(10);
         tvSensorInfo.setTextColor(C_DIM);
         tvSensorInfo.setGravity(Gravity.END);
-        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        infoLp.setMarginStart(dp(8));
-        header.addView(tvSensorInfo, infoLp);
+        header.addView(tvSensorInfo, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         root.addView(header);
         root.addView(makeGap(dp(16)));
@@ -207,7 +198,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         distCard.addView(distRow);
 
-        // Quality
         tvQuality = new TextView(this);
         tvQuality.setTextSize(11);
         tvQuality.setGravity(Gravity.CENTER);
@@ -222,7 +212,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvConfidenceBar.setPadding(0, dp(2), 0, 0);
         distCard.addView(tvConfidenceBar);
 
-        // Raw info
         tvRawInfo = new TextView(this);
         tvRawInfo.setTextSize(10);
         tvRawInfo.setTextColor(C_DIM);
@@ -241,7 +230,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         root.addView(distCard);
         root.addView(makeGap(dp(12)));
 
-        // === Sensor Debug Card (always visible, helps diagnose accuracy) ===
+        // === Sensor Debug Card ===
         LinearLayout debugCard = makeCard();
         debugCard.setPadding(dp(14), dp(10), dp(14), dp(10));
         tvSensorDebug = new TextView(this);
@@ -268,7 +257,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         root.addView(actionRow);
         root.addView(makeGap(dp(12)));
 
-        // === Continuous Card (hidden) ===
+        // === Continuous Card ===
         cardContinuous = makeCard();
         cardContinuous.setPadding(dp(14), dp(12), dp(14), dp(12));
         cardContinuous.setVisibility(View.GONE);
@@ -327,53 +316,37 @@ public class MainActivity extends Activity implements SensorEventListener {
         findTofSensor();
     }
 
-    // ========== Sensor Setup ==========
-
     private void findTofSensor() {
         List<Sensor> all = sensorManager.getSensorList(Sensor.TYPE_ALL);
         tofSensor = null;
         String sensorName = "未找到";
-        String sensorDetails = "";
 
         for (Sensor s : all) {
             String name = s.getName().toLowerCase();
             int type = s.getType();
             boolean isTof = type == SENSOR_TYPE_TOF
-                    || name.contains("tof") || name.contains("vl53")
-                    || name.contains("proximity") && s.getMaximumRange() > 5;
+                    || name.contains("tof") || name.contains("vl53");
 
             if (isTof && tofSensor == null) {
                 tofSensor = s;
                 sensorName = s.getName();
-                sensorMaxRange = s.getMaximumRange() * 10f; // getMaximumRange() 通常返回 cm，转 mm
-                sensorResolution = Math.max(1f, s.getResolution() * 10f);
 
-                // 如果 getMaximumRange() 返回值很小（<50），说明单位可能是 cm
-                if (s.getMaximumRange() < 50) {
-                    sensorMaxRange = s.getMaximumRange() * 10f; // cm → mm
-                } else {
-                    sensorMaxRange = s.getMaximumRange(); // 已经是 mm
+                // VL53Lx 传感器输出的是 cm，不是 mm
+                if (name.contains("vl53") || name.contains("tof")) {
+                    sensorOutputsCm = true;
                 }
-
-                sensorDetails = String.format(Locale.getDefault(),
-                        "type=%d range=%.0fmm res=%.1fmm",
-                        type, sensorMaxRange, sensorResolution);
+                break;
             }
         }
 
         if (tofSensor == null) {
             tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
             if (tofSensor != null) {
-                sensorName = tofSensor.getName() + " (Proximity降级)";
+                sensorName = tofSensor.getName() + " (降级)";
                 isProximityFallback = true;
-                sensorMaxRange = tofSensor.getMaximumRange() * 10f;
             }
         }
-
         tvSensorInfo.setText(sensorName);
-
-        // 更新滤波器的 maxRange
-        primaryFilter = new DistanceFilter(5, 0.4f, sensorMaxRange * 0.2f, sensorMaxRange);
     }
 
     @Override
@@ -389,12 +362,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensorManager.unregisterListener(this);
     }
 
-    // ========== Sensor Events ==========
-
     @Override
     public void onSensorChanged(SensorEvent event) {
         int type = event.sensor.getType();
-
         if (type != SENSOR_TYPE_TOF && type != Sensor.TYPE_PROXIMITY) return;
         if (isHolding) return;
 
@@ -405,34 +375,27 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (now - lastUiUpdate < 50) return;
         lastUiUpdate = now;
 
-        float rawMm = event.values[0];
-        lastRawMm = rawMm;
+        float rawValue = event.values[0]; // 传感器原始值
 
-        // 自动检测单位：观察前 30 个读数的范围
-        if (!unitDetected && detectCount < 30) {
-            if (rawMm > 0) {
-                observedMin = Math.min(observedMin, rawMm);
-                observedMax = Math.max(observedMax, rawMm);
-                detectCount++;
+        // VL53Lx: 8191 表示无信号（超出量程）
+        if (rawValue >= 8190) {
+            // 无信号，保持上一个有效值
+            if (lastFiltered > 0) {
+                updateDisplay(rawValue, lastValidRawMm, lastFiltered, true);
+            } else {
+                updateDisplay(rawValue, -1, -1, false);
             }
-            if (detectCount >= 10) {
-                // 如果最大值 < 100，大概率是 cm 不是 mm
-                if (observedMax < 100 && observedMax > 0) {
-                    sensorValuesInMm = false;
-                    sensorMaxRange = sensorMaxRange / 10f; // 调整范围
-                }
-                unitDetected = true;
-                // 用检测到的单位重新创建滤波器
-                float effectiveMaxRange = sensorValuesInMm ? sensorMaxRange : sensorMaxRange / 10f;
-                primaryFilter = new DistanceFilter(5, 0.4f, effectiveMaxRange * 0.2f, effectiveMaxRange);
-            }
+            return;
         }
 
-        // 如果传感器输出的是 cm，转成 mm
-        float rawValue = rawMm;
-        if (!sensorValuesInMm) {
-            rawMm = rawMm * 10f; // cm → mm
+        // 转换为 mm
+        float rawMm;
+        if (sensorOutputsCm) {
+            rawMm = rawValue * 10f; // cm → mm
+        } else {
+            rawMm = rawValue;
         }
+        lastValidRawMm = rawMm;
 
         // Warm-up
         if (warmUpCount < WARM_UP_SAMPLES) {
@@ -443,26 +406,21 @@ public class MainActivity extends Activity implements SensorEventListener {
         // 滤波
         float filtered = primaryFilter.filter(rawMm);
 
-        if (displayFrozen) {
-            filtered = lastFiltered > 0 ? lastFiltered : filtered;
-        }
         if (isLocked) {
             filtered = lockedDistance;
         }
 
-        if (filtered > 0 && !displayFrozen && !isLocked) {
+        if (filtered > 0 && !isLocked) {
             stats.add(filtered);
             checkContinuous(filtered);
         }
 
         lastFiltered = filtered;
-        updateDisplay(rawValue, rawMm, filtered);
+        updateDisplay(rawValue, rawMm, filtered, false);
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-
-    // ========== Continuous ==========
 
     private void checkContinuous(float filtered) {
         if (!continuousMode) return;
@@ -492,17 +450,16 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
-    // ========== Display ==========
-
-    private void updateDisplay(float rawSensorValue, float rawMm, float filtered) {
-        if (filtered < 0 || rawMm < 0) {
-            tvDistance.setText("ERR");
+    private void updateDisplay(float rawSensorValue, float rawMm, float filtered, boolean noSignal) {
+        if (noSignal || filtered <= 0) {
+            tvDistance.setText("--");
             tvDistance.setTextColor(C_ERR);
-            tvRawInfo.setText("超出范围");
-            tvHoldLabel.setText("⚠ 无信号");
-            tvHoldLabel.setTextColor(C_ERR);
+            tvRawInfo.setText(noSignal ? "无信号 (8191)" : "等待数据");
+            tvHoldLabel.setText(noSignal ? "⚠ 无信号" : "● 测量中");
+            tvHoldLabel.setTextColor(noSignal ? C_ERR : C_ACCENT);
             tvQuality.setText("");
             tvConfidenceBar.setText("");
+            updateDebugInfo(rawSensorValue, rawMm, filtered);
             return;
         }
 
@@ -512,10 +469,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         String stateText = "● 测量中";
         if (isLocked) stateText = "🔒 已锁定";
         else if (isHolding) stateText = "● 已暂停";
-        else if (displayFrozen) stateText = "📳 晃动冻结";
         tvHoldLabel.setText(stateText);
 
-        // 显示 1mm 步进
+        // 显示
         float rounded = Math.round(filtered);
         float displayVal = convertUnit(rounded, currentUnit);
         tvDistance.setText(fmt(displayVal, currentUnit));
@@ -523,16 +479,16 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         // Raw info
         tvRawInfo.setText(String.format(Locale.getDefault(),
-                "原始: %.1f → 滤波: %.1f mm", rawMm, filtered));
+                "原始: %.0f → 滤波: %.0f mm", rawMm, filtered));
 
         // Quality
         float stdDev = stats.getStdDev();
         String qualityLabel;
         int qualityColor;
-        if (stdDev < 3) {
+        if (stdDev < 5) {
             qualityLabel = "🟢 高精度";
             qualityColor = C_GOOD;
-        } else if (stdDev < 10) {
+        } else if (stdDev < 15) {
             qualityLabel = "🟡 良好";
             qualityColor = C_FAIR;
         } else {
@@ -542,8 +498,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvQuality.setText(qualityLabel);
         tvQuality.setTextColor(qualityColor);
 
-        // Confidence bar
-        int barLen = Math.max(0, Math.min(20, (int) (20 - stdDev * 0.5f)));
+        int barLen = Math.max(0, Math.min(20, (int) (20 - stdDev * 0.4f)));
         StringBuilder bar = new StringBuilder("[");
         for (int i = 0; i < 20; i++) bar.append(i < barLen ? "█" : "░");
         bar.append("]");
@@ -564,35 +519,37 @@ public class MainActivity extends Activity implements SensorEventListener {
                     fmtDec(stdDev, 1)));
         } else {
             tvStats.setText("等待数据...");
-            tvStats.setTextColor(C_DIM);
         }
 
-        // Sensor Debug — 帮助诊断精度问题
-        String unitHint = sensorValuesInMm ? "mm" : "cm(自动转mm)";
-        tvSensorDebug.setText(String.format(Locale.getDefault(),
-                "传感器: %s\n" +
-                "原始单位: %s | 量程: %.0f mm | 分辨率: %.1f mm\n" +
-                "values.length: %d | 最近原始值: %.2f\n" +
-                "检测范围: %.1f ~ %.1f (前%d个)\n" +
-                "滤波参数: 窗口=5 alpha=0.4 尖峰=%.0fmm",
-                tofSensor != null ? tofSensor.getName() : "null",
-                unitHint, sensorMaxRange, sensorResolution,
-                1, rawSensorValue,
-                observedMin, observedMax, detectCount,
-                sensorMaxRange * 0.2f));
+        updateDebugInfo(rawSensorValue, rawMm, filtered);
 
-        // Info
         tvHz.setText(String.format(Locale.getDefault(),
                 "%d Hz · %d samples", stats.getActualHz(), eventCount));
 
         if (isProximityFallback) {
-            tvStatus.setText("⚠ 降级 Proximity 传感器 — 仅支持近/远");
+            tvStatus.setText("⚠ 降级 Proximity 传感器");
             tvStatus.setTextColor(C_WARN);
         } else {
-            tvStatus.setText(String.format(Locale.getDefault(),
-                    "量程: %.0f–%.0f mm", Math.max(0, stats.getMin()), stats.getMax()));
             tvStatus.setTextColor(C_DIM);
         }
+    }
+
+    private void updateDebugInfo(float rawSensorValue, float rawMm, float filtered) {
+        float apiRange = 0;
+        if (tofSensor != null) apiRange = tofSensor.getMaximumRange();
+
+        tvSensorDebug.setText(String.format(Locale.getDefault(),
+                "传感器: %s (type=%d)\n" +
+                "API量程: %.0f %s | 实际可用: 4000 mm\n" +
+                "传感器输出单位: %s\n" +
+                "原始值(values[0]): %.1f → %.0f mm\n" +
+                "滤波: alpha=%.1f 窗口=5 无范围限制",
+                tofSensor != null ? tofSensor.getName() : "null",
+                tofSensor != null ? tofSensor.getType() : 0,
+                apiRange, apiRange < 1 ? "(无效!)" : "",
+                sensorOutputsCm ? "cm" : "mm",
+                rawSensorValue, rawMm,
+                0.5f));
     }
 
     // ========== Actions ==========
@@ -614,24 +571,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void resetAll() {
         stats.reset();
         primaryFilter.reset();
-        shakeDetector.reset();
         eventCount = 0;
         lastFiltered = -1;
-        lastRawMm = -1;
+        lastValidRawMm = -1;
         isLocked = false;
         lockedDistance = -1;
         continuousMode = false;
         continuousRecords.clear();
         lastStableValue = -1;
         warmUpCount = 0;
-        displayFrozen = false;
-        unitDetected = false;
-        detectCount = 0;
-        observedMin = Float.MAX_VALUE;
-        observedMax = 0;
-        sensorValuesInMm = true;
         cardContinuous.setVisibility(View.GONE);
-        updateDisplay(0, 0, -1);
+        updateDisplay(0, -1, -1, false);
     }
 
     private void cycleUnit() {
@@ -654,20 +604,19 @@ public class MainActivity extends Activity implements SensorEventListener {
         tvLockedInfo.setVisibility(View.VISIBLE);
         vibrate(100);
 
-        // Screenshot
         View rootView = getWindow().getDecorView().getRootView();
         rootView.post(() -> {
             try {
                 Bitmap bitmap = Bitmap.createBitmap(rootView.getWidth(), rootView.getHeight(), Bitmap.Config.ARGB_8888);
                 Canvas canvas = new Canvas(bitmap);
                 rootView.draw(canvas);
-                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+                String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
                 String u = UNIT_LABELS[currentUnit];
-                String filename = String.format("tof_%s_%s_%s.png",
-                        fmt(convertUnit(lockedDistance, currentUnit), currentUnit), u, timestamp);
+                String fn = String.format("tof_%s_%s_%s.png",
+                        fmt(convertUnit(lockedDistance, currentUnit), currentUnit), u, ts);
                 File dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
                 if (dir == null) dir = getFilesDir();
-                FileOutputStream fos = new FileOutputStream(new File(dir, filename));
+                FileOutputStream fos = new FileOutputStream(new File(dir, fn));
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
                 fos.close();
             } catch (Exception ignored) {}
@@ -692,11 +641,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void exportCSV() {
         if (stats.getSampleCount() == 0) return;
         try {
-            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+            String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
             File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
             if (dir == null) dir = getFilesDir();
-            File file = new File(dir, "tof_data_" + timestamp + ".csv");
-            FileWriter fw = new FileWriter(file);
+            FileWriter fw = new FileWriter(new File(dir, "tof_data_" + ts + ".csv"));
             fw.write("timestamp,distance_mm\n");
             if (!continuousRecords.isEmpty()) {
                 SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
@@ -745,7 +693,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
-    // ========== UI Builders ==========
+    // ========== UI ==========
 
     private LinearLayout makeCard() {
         LinearLayout card = new LinearLayout(this);
@@ -844,8 +792,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density);
     }
-
-    // ========== Data Classes ==========
 
     static class MeasurementRecord {
         final float distanceMm;
