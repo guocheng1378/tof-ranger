@@ -523,13 +523,13 @@ public class MainActivity extends Activity implements SensorEventListener {
         String qualityLabel;
         int qualityColor;
         if (stdDev < 5) {
-            qualityLabel = "🟢 高精度 (σ=" + fmt(stdDev, 0) + "mm)";
+            qualityLabel = "🟢 高精度 (σ=" + fmtDec(stdDev, 0) + "mm)";
             qualityColor = C_GOOD;
         } else if (stdDev < 20) {
-            qualityLabel = "🟡 良好 (σ=" + fmt(stdDev, 0) + "mm)";
+            qualityLabel = "🟡 良好 (σ=" + fmtDec(stdDev, 0) + "mm)";
             qualityColor = C_FAIR;
         } else {
-            qualityLabel = "🔴 波动大 (σ=" + fmt(stdDev, 0) + "mm)";
+            qualityLabel = "🔴 波动大 (σ=" + fmtDec(stdDev, 0) + "mm)";
             qualityColor = C_POOR;
         }
         tvQuality.setText(qualityLabel);
@@ -637,8 +637,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
-    // Overload for raw mm values that need decimal formatting
-    private String fmt(float val, int decimals) {
+    // Overload for raw mm values with decimal formatting
+    private String fmtDec(float val, int decimals) {
         return String.format(Locale.getDefault(), "%." + decimals + "f", val);
     }
 
@@ -752,8 +752,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     // ========== UI Helpers ==========
 
     private View findViewByTag(String tag) {
-        // Simple recursive search
-        return findViewWithTag(tag);
+        return getWindow().getDecorView().findViewWithTag(tag);
     }
 
     private LinearLayout makeCard() {
