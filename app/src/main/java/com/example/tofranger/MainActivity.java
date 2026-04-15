@@ -139,16 +139,20 @@ public class MainActivity extends Activity implements SensorEventListener {
     private TextView debugText;
     private TextView statMinText, statMaxText, statAvgText, statStdText;
 
+    // Bottom bar floating container
+    private FrameLayout bottomBarFloat;
+
     // Bottom buttons
     private GlassButton lockBtn;
     private GlassButton pauseBtn;
+    private GlassButton recordBtn;
     private GlassButton unitBtn;
+    private GlassButton moreBtn;
     private GlassButton resetBtn;
 
     // More panel buttons
     private GlassButton debugBtn;
     private GlassButton calibrateBtn;
-    private GlassButton csvBtn;
     private GlassButton continuousBtn;
     private GlassButton themeBtn;
 
@@ -157,7 +161,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     // ─────────────────────────────────────────────
 
     /**
-     * Frosted glass card with semi-transparent bg, shine gradient, edge highlight, shadow.
+     * Apple Liquid Glass card — multi-layer frosted glass with
+     * specular highlight, rim light, inner shadow, and accent tint.
      */
     class GlassCard extends FrameLayout {
 
@@ -165,6 +170,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         private final Paint shinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint edgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
         private float cornerRadius;
         private int accentTint = 0;
@@ -173,15 +180,15 @@ public class MainActivity extends Activity implements SensorEventListener {
             super(ctx);
             setWillNotDraw(false);
             setClipChildren(false);
-            cornerRadius = 24f;
+            cornerRadius = 28f;
             bgPaint.setColor(C_GLASS_BG);
             bgPaint.setStyle(Paint.Style.FILL);
             edgePaint.setColor(C_GLASS_EDGE);
             edgePaint.setStyle(Paint.Style.STROKE);
-            edgePaint.setStrokeWidth(1.5f);
+            edgePaint.setStrokeWidth(1.2f);
             shadowPaint.setColor(0x22000000);
             shadowPaint.setStyle(Paint.Style.FILL);
-            shadowPaint.setMaskFilter(new BlurMaskFilter(16f, BlurMaskFilter.Blur.OUTER));
+            shadowPaint.setMaskFilter(new BlurMaskFilter(20f, BlurMaskFilter.Blur.OUTER));
             setLayerType(LAYER_TYPE_SOFTWARE, null);
         }
 
@@ -194,35 +201,61 @@ public class MainActivity extends Activity implements SensorEventListener {
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float r = cornerRadius;
-            rect.set(4, 4, getWidth() - 4, getHeight() - 4);
+            float inset = 5f;
+            rect.set(inset, inset, getWidth() - inset, getHeight() - inset);
 
-            // Shadow
+            // Drop shadow
             canvas.drawRoundRect(rect, r, r, shadowPaint);
 
-            // Background
+            // Background fill
             canvas.drawRoundRect(rect, r, r, bgPaint);
+
+            // --- Apple Liquid Glass layers ---
+
+            // Layer 1: Top specular highlight (bright band near top)
+            float specH = rect.height() * 0.35f;
+            int specTopC = isLightTheme ? 0x1A000000 : 0x22FFFFFF;
+            int specBotC = 0x00000000;
+            shinePaint.setShader(new LinearGradient(
+                    rect.left, rect.top, rect.left, rect.top + specH,
+                    new int[]{specTopC, specBotC},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, shinePaint);
+
+            // Layer 2: Bottom rim glow (subtle reflection from surface below)
+            float rimH = rect.height() * 0.25f;
+            int rimBotC = isLightTheme ? 0x0A000000 : 0x0DFFFFFF;
+            int rimTopC = 0x00000000;
+            rimPaint.setShader(new LinearGradient(
+                    rect.left, rect.bottom - rimH, rect.left, rect.bottom,
+                    new int[]{rimTopC, rimBotC},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, rimPaint);
+
+            // Layer 3: Edge highlight (rim light around entire card)
+            canvas.drawRoundRect(rect, r, r, edgePaint);
+
+            // Layer 4: Inner shadow (top edge, creates depth)
+            float innerShadowH = 6f;
+            int innerShadowC = isLightTheme ? 0x0D000000 : 0x15000000;
+            RectF innerRect = new RectF(rect.left + 1, rect.top + 1, rect.right - 1, rect.top + innerShadowH);
+            innerShadowPaint.setShader(new LinearGradient(
+                    innerRect.left, innerRect.top, innerRect.left, innerRect.bottom,
+                    new int[]{innerShadowC, 0x00000000},
+                    null, Shader.TileMode.CLAMP));
+            innerShadowPaint.setStyle(Paint.Style.FILL);
+            canvas.drawRoundRect(new RectF(rect.left, rect.top, rect.right, rect.top + innerShadowH),
+                    r, r, innerShadowPaint);
 
             // Accent tint bottom edge
             if (accentTint != 0) {
                 Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
                 tintPaint.setStyle(Paint.Style.FILL);
-                float edgeH = 3f;
+                float edgeH = 3.5f;
                 RectF bottomEdge = new RectF(rect.left, rect.bottom - edgeH, rect.right, rect.bottom);
                 tintPaint.setColor(accentTint & 0x30FFFFFF);
                 canvas.drawRoundRect(bottomEdge, r, r, tintPaint);
             }
-
-            // Shine gradient (top half, fading down)
-            int shineTop = isLightTheme ? 0x10000000 : 0x15FFFFFF;
-            int shineBot = 0x00000000;
-            shinePaint.setShader(new LinearGradient(
-                    rect.left, rect.top, rect.left, rect.top + rect.height() * 0.5f,
-                    new int[]{shineTop, shineBot},
-                    null, Shader.TileMode.CLAMP));
-            canvas.drawRoundRect(rect, r, r, shinePaint);
-
-            // Edge highlight
-            canvas.drawRoundRect(rect, r, r, edgePaint);
         }
     }
 
@@ -248,6 +281,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         static final int ICON_PAUSE = 1;
         static final int ICON_RULER = 2;
         static final int ICON_THEME = 3;
+        static final int ICON_RECORD = 4;
+        static final int ICON_MORE = 5;
 
         public GlassButton(Context ctx) {
             super(ctx);
@@ -323,6 +358,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                 case ICON_PAUSE: drawPauseIcon(canvas, cx, iconCy, iconSize); break;
                 case ICON_RULER: drawRulerIcon(canvas, cx, iconCy, iconSize); break;
                 case ICON_THEME: drawThemeIcon(canvas, cx, iconCy, iconSize); break;
+                case ICON_RECORD: drawRecordIcon(canvas, cx, iconCy, iconSize); break;
+                case ICON_MORE: drawMoreIcon(canvas, cx, iconCy, iconSize); break;
                 default:
                     // Text-only button (for more panel)
                     if (!label.isEmpty()) {
@@ -465,6 +502,33 @@ public class MainActivity extends Activity implements SensorEventListener {
                     c.drawLine(x1, y1, x2, y2, iconPaint);
                 }
             }
+        }
+
+        // Record icon: solid circle (recording) or circle outline (idle)
+        private void drawRecordIcon(Canvas c, float cx, float cy, float s) {
+            float r = s * 0.3f;
+            if (active) {
+                // Recording: pulsing red dot (solid fill)
+                iconPaint.setStyle(Paint.Style.FILL);
+                iconPaint.setColor(0xFFFF3B30); // iOS red
+                c.drawCircle(cx, cy, r, iconPaint);
+                iconPaint.setStyle(Paint.Style.STROKE);
+            } else {
+                // Idle: circle outline
+                iconPaint.setStyle(Paint.Style.STROKE);
+                c.drawCircle(cx, cy, r, iconPaint);
+            }
+        }
+
+        // More icon: three horizontal dots
+        private void drawMoreIcon(Canvas c, float cx, float cy, float s) {
+            float dotR = s * 0.07f;
+            float spacing = s * 0.22f;
+            iconPaint.setStyle(Paint.Style.FILL);
+            c.drawCircle(cx - spacing, cy, dotR, iconPaint);
+            c.drawCircle(cx, cy, dotR, iconPaint);
+            c.drawCircle(cx + spacing, cy, dotR, iconPaint);
+            iconPaint.setStyle(Paint.Style.STROKE);
         }
 
         @Override
@@ -617,9 +681,17 @@ public class MainActivity extends Activity implements SensorEventListener {
                 continuousMode = !continuousMode;
                 if (continuousMode) {
                     isRecording = true;
-                    if (continuousBtn != null) continuousBtn.setLabel("连续测量 ✓");
+                    if (continuousBtn != null) continuousBtn.setLabel("连续模式 ✓");
+                    if (recordBtn != null) {
+                        recordBtn.setLabel("记录中…");
+                        recordBtn.setActive(true);
+                    }
                 } else {
-                    if (continuousBtn != null) continuousBtn.setLabel("连续测量");
+                    if (continuousBtn != null) continuousBtn.setLabel("连续模式");
+                    if (recordBtn != null) {
+                        recordBtn.setLabel("记录");
+                        recordBtn.setActive(false);
+                    }
                 }
                 vibrate(50);
                 return true;
@@ -652,6 +724,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         contentLayout.setPadding(dp(20), dp(48), dp(20), dp(120));
 
         buildDistanceCard();
+        buildStatusSection();
+        buildDebugSection();
 
         scrollView.addView(contentLayout, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -664,13 +738,16 @@ public class MainActivity extends Activity implements SensorEventListener {
         rootLayout.addView(scrollView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // More panel (initially hidden)
-        rootLayout.addView(morePanel, new FrameLayout.LayoutParams(
+        // More panel (initially hidden) — positioned above floating bar
+        morePanel.setVisibility(View.GONE);
+        FrameLayout.LayoutParams moreLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM));
+                Gravity.BOTTOM);
+        moreLp.bottomMargin = dp(88);
+        rootLayout.addView(morePanel, moreLp);
 
-        // Bottom bar sits above more panel
-        rootLayout.addView(bottomBar, new FrameLayout.LayoutParams(
+        // Floating bottom bar
+        rootLayout.addView(bottomBarFloat, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM));
     }
@@ -773,22 +850,72 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     private void buildBottomBar() {
+        // ── Floating container with outer padding (the "float" effect) ──
+        FrameLayout floatContainer = new FrameLayout(this);
+        floatContainer.setPadding(dp(16), 0, dp(16), dp(12));
+
         bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
+        bottomBar.setClipChildren(false);
+        floatContainer.setClipChildren(false);
 
-        // Frosted glass background with rounded top corners
+        // ── Apple Liquid Glass background ──
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(isLightTheme ? 0xCCF2F2F7 : 0xCC1C1C1E);
-        bg.setCornerRadii(new float[]{dp(24), dp(24), dp(24), dp(24), 0, 0, 0, 0});
+        if (isLightTheme) {
+            bg.setColor(0xD9F2F2F7); // ~85% opacity
+        } else {
+            bg.setColor(0xD92C2C2E);
+        }
+        bg.setCornerRadius(dp(28));
         bottomBar.setBackground(bg);
-        bottomBar.setPadding(dp(16), dp(10), dp(16), dp(10));
+        bottomBar.setPadding(dp(8), dp(8), dp(8), dp(8));
 
-        // Top edge highlight
-        View topEdge = new View(this);
-        topEdge.setBackgroundColor(isLightTheme ? 0x33000000 : 0x33FFFFFF);
+        // Software layer for custom drawing overlay
+        bottomBar.setLayerType(LAYER_TYPE_SOFTWARE, null);
 
-        int btnSize = dp(60);
+        // ── Glass shine overlay (drawn on bottomBar) ──
+        View glassOverlay = new View(this) {
+            private final Paint shineP = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint edgeP = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint innerP = new Paint(Paint.ANTI_ALIAS_FLAG);
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                float w = getWidth();
+                float h = getHeight();
+                float r = dp(28);
+
+                // Top specular highlight
+                float specH = h * 0.45f;
+                int specTop = isLightTheme ? 0x1AFFFFFF : 0x18FFFFFF;
+                shineP.setShader(new LinearGradient(
+                        0, 0, 0, specH,
+                        new int[]{specTop, 0x00000000},
+                        null, Shader.TileMode.CLAMP));
+                canvas.drawRoundRect(0, 0, w, h, r, r, shineP);
+
+                // Rim light (top edge highlight)
+                edgeP.setColor(isLightTheme ? 0x44000000 : 0x33FFFFFF);
+                edgeP.setStyle(Paint.Style.STROKE);
+                edgeP.setStrokeWidth(1.2f);
+                canvas.drawRoundRect(0.6f, 0.6f, w - 0.6f, h - 0.6f, r, r, edgeP);
+
+                // Inner shadow at top
+                float innerH = 5f;
+                int innerC = isLightTheme ? 0x0F000000 : 0x18000000;
+                innerP.setShader(new LinearGradient(
+                        0, 0, 0, innerH,
+                        new int[]{innerC, 0x00000000},
+                        null, Shader.TileMode.CLAMP));
+                innerP.setStyle(Paint.Style.FILL);
+                canvas.drawRoundRect(new RectF(1, 1, w - 1, innerH), r, r, innerP);
+            }
+        };
+        glassOverlay.setWillNotDraw(false);
+
+        // ── Buttons ──
+        int btnSize = dp(56);
 
         lockBtn = new GlassButton(this);
         lockBtn.setIconType(GlassButton.ICON_LOCK);
@@ -812,6 +939,30 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
+        // ── Center record button (prominent) ──
+        recordBtn = new GlassButton(this);
+        recordBtn.setIconType(GlassButton.ICON_RECORD);
+        recordBtn.setLabel(isRecording ? "记录中…" : "记录");
+        recordBtn.setAccentColor(0xFFFF3B30);
+        recordBtn.setActive(isRecording);
+        recordBtn.setOnPress(() -> {
+            isRecording = !isRecording;
+            if (isRecording) {
+                csvData.clear();
+                recordBtn.setLabel("记录中…");
+                recordBtn.setActive(true);
+                continuousMode = true;
+            } else {
+                continuousMode = false;
+                if (!csvData.isEmpty()) {
+                    exportCsv();
+                }
+                recordBtn.setLabel("记录");
+                recordBtn.setActive(false);
+            }
+            vibrate(50);
+        });
+
         unitBtn = new GlassButton(this);
         unitBtn.setIconType(GlassButton.ICON_RULER);
         unitBtn.setLabel("cm");
@@ -823,42 +974,74 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
-        themeBtn = new GlassButton(this);
-        themeBtn.setIconType(GlassButton.ICON_THEME);
-        themeBtn.setLabel(isLightTheme ? "深色" : "浅色");
-        themeBtn.setAccentColor(C_TEXT_DIM);
-        themeBtn.setActive(isLightTheme);
-        themeBtn.setOnPress(() -> {
-            isLightTheme = !isLightTheme;
-            applyTheme(isLightTheme);
-            rebuildUI();
+        moreBtn = new GlassButton(this);
+        moreBtn.setIconType(GlassButton.ICON_MORE);
+        moreBtn.setLabel("更多");
+        moreBtn.setAccentColor(C_TEXT_DIM);
+        moreBtn.setActive(false);
+        moreBtn.setOnPress(() -> {
+            moreExpanded = !moreExpanded;
+            moreBtn.setActive(moreExpanded);
+            updateMorePanel();
             vibrate(30);
         });
 
         LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(btnSize, dp(52));
         btnLp.weight = 1;
 
+        // Record button is slightly larger
+        LinearLayout.LayoutParams recordLp = new LinearLayout.LayoutParams(dp(60), dp(56));
+        recordLp.weight = 1;
+
         bottomBar.addView(lockBtn, btnLp);
         bottomBar.addView(pauseBtn, btnLp);
+        bottomBar.addView(recordBtn, recordLp);
         bottomBar.addView(unitBtn, btnLp);
-        bottomBar.addView(themeBtn, btnLp);
+        bottomBar.addView(moreBtn, btnLp);
+
+        // Compose: overlay on top of buttons
+        FrameLayout overlayContainer = new FrameLayout(this);
+        overlayContainer.addView(bottomBar, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        overlayContainer.addView(glassOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        floatContainer.addView(overlayContainer, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Replace bottomBar reference for layout
+        bottomBar = new LinearLayout(this); // dummy, real layout is floatContainer
+        bottomBar.setVisibility(View.GONE); // hide dummy
+
+        // Store floatContainer for use in buildUI
+        bottomBarFloat = floatContainer;
     }
 
     private void buildMorePanel() {
         morePanel = new LinearLayout(this);
         morePanel.setOrientation(LinearLayout.VERTICAL);
-        morePanel.setBackgroundColor(C_MORE_BG);
-        morePanel.setPadding(dp(16), dp(12), dp(16), dp(12));
-        morePanel.setVisibility(View.GONE);
 
-        // Add bottom bar height offset
+        // Apple liquid glass style for panel
+        GradientDrawable panelBg = new GradientDrawable();
+        if (isLightTheme) {
+            panelBg.setColor(0xE6F2F2F7);
+        } else {
+            panelBg.setColor(0xE62C2C2E);
+        }
+        panelBg.setCornerRadius(dp(20));
+        morePanel.setBackground(panelBg);
+        morePanel.setPadding(dp(16), dp(14), dp(16), dp(14));
+        morePanel.setVisibility(View.GONE);
+        morePanel.setClipChildren(false);
+
+        // Position above floating bar
         FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) morePanel.getLayoutParams();
         if (mlp == null) {
             mlp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM);
         }
-        mlp.bottomMargin = dp(72); // above bottom bar
+        mlp.bottomMargin = dp(88); // above floating bar
 
         int rowHeight = dp(44);
 
@@ -885,21 +1068,19 @@ public class MainActivity extends Activity implements SensorEventListener {
             statusText.setText("已校准 ✓");
         });
 
-        csvBtn = makeFlatButton("导出 CSV", C_ACCENT3);
-        csvBtn.setOnPress(() -> {
-            if (csvData.isEmpty()) {
-                statusText.setText("无数据可导出");
-            } else {
-                exportCsv();
-            }
-            vibrate(50);
-        });
-
-        continuousBtn = makeFlatButton("连续测量", 0xFFFF375F);
+        continuousBtn = makeFlatButton("连续模式", 0xFFFF375F);
         continuousBtn.setOnPress(() -> {
             continuousMode = !continuousMode;
-            continuousBtn.setLabel(continuousMode ? "连续测量 ✓" : "连续测量");
+            continuousBtn.setLabel(continuousMode ? "连续模式 ✓" : "连续模式");
             if (continuousMode) isRecording = true;
+            vibrate(30);
+        });
+
+        themeBtn = makeFlatButton(isLightTheme ? "🌙 深色模式" : "☀️ 浅色模式", C_TEXT_DIM);
+        themeBtn.setOnPress(() -> {
+            isLightTheme = !isLightTheme;
+            applyTheme(isLightTheme);
+            rebuildUI();
             vibrate(30);
         });
 
@@ -909,8 +1090,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         morePanel.addView(resetBtn, rowLp);
         morePanel.addView(debugBtn, rowLp);
         morePanel.addView(calibrateBtn, rowLp);
-        morePanel.addView(csvBtn, rowLp);
         morePanel.addView(continuousBtn, rowLp);
+        morePanel.addView(themeBtn, rowLp);
     }
 
     private GlassButton makeFlatButton(String label, int accent) {
@@ -944,9 +1125,13 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     private void updateMorePanel() {
-        morePanel.setVisibility(moreExpanded ? View.VISIBLE : View.GONE);
         if (moreExpanded) {
-            morePanel.animate().translationY(0).setDuration(250).start();
+            morePanel.setVisibility(View.VISIBLE);
+            morePanel.setAlpha(0f);
+            morePanel.animate().alpha(1f).translationY(0).setDuration(250).start();
+        } else {
+            morePanel.animate().alpha(0f).setDuration(200)
+                    .withEndAction(() -> morePanel.setVisibility(View.GONE)).start();
         }
     }
 
@@ -1180,7 +1365,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         csvData.clear();
         isRecording = false;
         continuousMode = false;
-        continuousBtn.setLabel("连续测量");
+        if (recordBtn != null) {
+            recordBtn.setLabel("记录");
+            recordBtn.setActive(false);
+        }
+        if (continuousBtn != null) continuousBtn.setLabel("连续模式");
         currentDistance = -1;
         filteredDistance = -1;
         smoothDisplay = -1;
