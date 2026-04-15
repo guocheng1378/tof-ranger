@@ -609,6 +609,24 @@ public class MainActivity extends Activity implements SensorEventListener {
         unregisterSensors();
     }
 
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP ||
+                event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                continuousMode = !continuousMode;
+                if (continuousMode) {
+                    isRecording = true;
+                    if (continuousBtn != null) continuousBtn.setLabel("连续测量 ✓");
+                } else {
+                    if (continuousBtn != null) continuousBtn.setLabel("连续测量");
+                }
+                vibrate(50);
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
 
 
     // ─────────────────────────────────────────────
