@@ -156,6 +156,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     private GlassButton continuousBtn;
     private GlassButton themeBtn;
 
+    // Record section
+    private TextView recordStatusText;
+    private TextView recordCountText;
+
     // ─────────────────────────────────────────────
     //  Inner classes: GlassCard, GlassButton, QualityBarView
     // ─────────────────────────────────────────────
@@ -683,14 +687,22 @@ public class MainActivity extends Activity implements SensorEventListener {
                     isRecording = true;
                     if (continuousBtn != null) continuousBtn.setLabel("连续模式 ✓");
                     if (recordBtn != null) {
-                        recordBtn.setLabel("记录中…");
+                        recordBtn.setLabel("停止");
                         recordBtn.setActive(true);
+                    }
+                    if (recordStatusText != null) {
+                        recordStatusText.setText("● 记录中");
+                        recordStatusText.setTextColor(0xFFFF3B30);
                     }
                 } else {
                     if (continuousBtn != null) continuousBtn.setLabel("连续模式");
                     if (recordBtn != null) {
-                        recordBtn.setLabel("记录");
+                        recordBtn.setLabel("开始");
                         recordBtn.setActive(false);
+                    }
+                    if (recordStatusText != null) {
+                        recordStatusText.setText("数据记录");
+                        recordStatusText.setTextColor(C_TEXT);
                     }
                 }
                 vibrate(50);
@@ -724,6 +736,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         contentLayout.setPadding(dp(20), dp(48), dp(20), dp(120));
 
         buildDistanceCard();
+        buildRecordSection();
         buildStatusSection();
         buildDebugSection();
 
@@ -849,6 +862,79 @@ public class MainActivity extends Activity implements SensorEventListener {
         contentLayout.addView(debugText, dlp);
     }
 
+    private void buildRecordSection() {
+        GlassCard recordCard = new GlassCard(this);
+        recordCard.setAccentTint(0xFFFF3B30);
+
+        LinearLayout inner = new LinearLayout(this);
+        inner.setOrientation(LinearLayout.HORIZONTAL);
+        inner.setGravity(Gravity.CENTER_VERTICAL);
+        inner.setPadding(dp(20), dp(16), dp(20), dp(16));
+
+        // Left: status text + counter
+        LinearLayout infoCol = new LinearLayout(this);
+        infoCol.setOrientation(LinearLayout.VERTICAL);
+        infoCol.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+
+        recordStatusText = new TextView(this);
+        recordStatusText.setText("数据记录");
+        recordStatusText.setTextColor(C_TEXT);
+        recordStatusText.setTextSize(16);
+        recordStatusText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        infoCol.addView(recordStatusText);
+
+        recordCountText = new TextView(this);
+        recordCountText.setText("0 条数据");
+        recordCountText.setTextColor(C_TEXT_DIM);
+        recordCountText.setTextSize(13);
+        LinearLayout.LayoutParams cntLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cntLp.topMargin = dp(4);
+        infoCol.addView(recordCountText, cntLp);
+
+        inner.addView(infoCol, infoLp);
+
+        // Right: record button
+        recordBtn = new GlassButton(this);
+        recordBtn.setIconType(GlassButton.ICON_RECORD);
+        recordBtn.setLabel(isRecording ? "停止" : "开始");
+        recordBtn.setAccentColor(0xFFFF3B30);
+        recordBtn.setActive(isRecording);
+        recordBtn.setOnPress(() -> {
+            isRecording = !isRecording;
+            if (isRecording) {
+                csvData.clear();
+                recordBtn.setLabel("停止");
+                recordBtn.setActive(true);
+                recordStatusText.setText("● 记录中");
+                recordStatusText.setTextColor(0xFFFF3B30);
+                continuousMode = true;
+            } else {
+                continuousMode = false;
+                recordBtn.setLabel("开始");
+                recordBtn.setActive(false);
+                recordStatusText.setText("数据记录");
+                recordStatusText.setTextColor(C_TEXT);
+                if (!csvData.isEmpty()) {
+                    exportCsv();
+                }
+            }
+            vibrate(50);
+        });
+
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(dp(56), dp(52));
+        inner.addView(recordBtn, btnLp);
+
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cardLp.setMargins(0, 0, 0, dp(16));
+        recordCard.addView(inner, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        contentLayout.addView(recordCard, cardLp);
+    }
+
     private void buildBottomBar() {
         // ── Floating container with outer padding (the "float" effect) ──
         FrameLayout floatContainer = new FrameLayout(this);
@@ -939,30 +1025,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
-        // ── Center record button (prominent) ──
-        recordBtn = new GlassButton(this);
-        recordBtn.setIconType(GlassButton.ICON_RECORD);
-        recordBtn.setLabel(isRecording ? "记录中…" : "记录");
-        recordBtn.setAccentColor(0xFFFF3B30);
-        recordBtn.setActive(isRecording);
-        recordBtn.setOnPress(() -> {
-            isRecording = !isRecording;
-            if (isRecording) {
-                csvData.clear();
-                recordBtn.setLabel("记录中…");
-                recordBtn.setActive(true);
-                continuousMode = true;
-            } else {
-                continuousMode = false;
-                if (!csvData.isEmpty()) {
-                    exportCsv();
-                }
-                recordBtn.setLabel("记录");
-                recordBtn.setActive(false);
-            }
-            vibrate(50);
-        });
-
         unitBtn = new GlassButton(this);
         unitBtn.setIconType(GlassButton.ICON_RULER);
         unitBtn.setLabel("cm");
@@ -989,13 +1051,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(btnSize, dp(52));
         btnLp.weight = 1;
 
-        // Record button is slightly larger
-        LinearLayout.LayoutParams recordLp = new LinearLayout.LayoutParams(dp(60), dp(56));
-        recordLp.weight = 1;
-
         bottomBar.addView(lockBtn, btnLp);
         bottomBar.addView(pauseBtn, btnLp);
-        bottomBar.addView(recordBtn, recordLp);
         bottomBar.addView(unitBtn, btnLp);
         bottomBar.addView(moreBtn, btnLp);
 
@@ -1349,6 +1406,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (now - lastContinuousCsv >= CONTINUOUS_CSV_INTERVAL_MS) {
                 csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
                 lastContinuousCsv = now;
+                // Update record count display
+                if (recordCountText != null) {
+                    recordCountText.setText(csvData.size() + " 条数据");
+                }
             }
         }
     }
@@ -1366,8 +1427,15 @@ public class MainActivity extends Activity implements SensorEventListener {
         isRecording = false;
         continuousMode = false;
         if (recordBtn != null) {
-            recordBtn.setLabel("记录");
+            recordBtn.setLabel("开始");
             recordBtn.setActive(false);
+        }
+        if (recordStatusText != null) {
+            recordStatusText.setText("数据记录");
+            recordStatusText.setTextColor(C_TEXT);
+        }
+        if (recordCountText != null) {
+            recordCountText.setText("0 条数据");
         }
         if (continuousBtn != null) continuousBtn.setLabel("连续模式");
         currentDistance = -1;
