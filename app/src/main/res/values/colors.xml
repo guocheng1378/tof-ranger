@@ -13,4 +13,8 @@
     <color name="glass_edge">#44FFFFFF</color>
     <color name="glass_shine">#66FFFFFF</color>
     <color name="err">#FFFF453A</color>
+
+    <!-- App Icon Background -->
+    <color name="ic_launcher_bg">#FFFFFFFF</color>
+    <color name="ic_launcher_bg_dark">#FF000000</color>
 </resources>
