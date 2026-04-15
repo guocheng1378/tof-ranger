@@ -126,7 +126,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     private FrameLayout rootLayout;
     private ScrollView scrollView;
     private LinearLayout contentLayout;
-    private LinearLayout bottomBar;
     private LinearLayout morePanel;
 
     // Distance display
@@ -159,6 +158,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private TextView recordStatusText;
     private TextView recordCountText;
     private TextView recordTimeText;
+    private TextView recordDistText;
     private long recordStartTime = 0;
 
     // ─────────────────────────────────────────────
@@ -724,14 +724,25 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (dist >= 0) {
             csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
             final int count = csvData.size();
+            final String distStr = formatDistance(dist);
             runOnUiThread(() -> {
                 if (recordCountText != null) recordCountText.setText(count + " 条数据");
                 if (recordStatusText != null) {
                     recordStatusText.setText("● 已记录");
                     recordStatusText.setTextColor(C_ACCENT);
                 }
+                if (recordDistText != null) recordDistText.setText("最近: " + distStr);
             });
             vibrate(50);
+        }
+    }
+
+    /** 格式化距离显示 */
+    private String formatDistance(float distMm) {
+        switch (unitMode) {
+            case 1: return String.format(Locale.US, "%.1f mm", distMm);
+            case 2: return String.format(Locale.US, "%.2f in", distMm / 25.4f);
+            default: return String.format(Locale.US, "%.1f cm", distMm / 10f);
         }
     }
 
@@ -919,14 +930,24 @@ public class MainActivity extends Activity implements SensorEventListener {
         infoCol.addView(recordCountText, cntLp);
 
         recordTimeText = new TextView(this);
-        recordTimeText.setText("");
+        recordTimeText.setText("0:00");
         recordTimeText.setTextColor(C_TEXT_DIM);
         recordTimeText.setTextSize(12);
-        recordTimeText.setVisibility(View.GONE);
         LinearLayout.LayoutParams timeLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         timeLp.topMargin = dp(2);
         infoCol.addView(recordTimeText, timeLp);
+
+        // 距离值预览行
+        recordDistText = new TextView(this);
+        recordDistText.setText("");
+        recordDistText.setTextColor(C_ACCENT);
+        recordDistText.setTextSize(14);
+        recordDistText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        LinearLayout.LayoutParams distLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        distLp.topMargin = dp(4);
+        infoCol.addView(recordDistText, distLp);
 
         inner.addView(infoCol, infoLp);
 
@@ -945,7 +966,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 recordBtn.setActive(true);
                 recordStatusText.setText("● 记录中");
                 recordStatusText.setTextColor(0xFFFF3B30);
-                recordTimeText.setVisibility(View.VISIBLE);
                 continuousMode = true;
                 // 立即记录当前距离
                 recordSingleDataPoint();
@@ -973,6 +993,76 @@ public class MainActivity extends Activity implements SensorEventListener {
         contentLayout.addView(recordCard, cardLp);
     }
 
+    /**
+     * Apple-style liquid glass bar background view.
+     * Multi-layer: frosted base → top specular → bottom glow → rim light
+     */
+    class GlassBarView extends View {
+        private final Paint basePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint specPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint edgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint innerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF barRect = new RectF();
+        private float cr; // corner radius
+
+        public GlassBarView(Context ctx) {
+            super(ctx);
+            setWillNotDraw(false);
+            cr = dp(28);
+            edgePaint.setStyle(Paint.Style.STROKE);
+            edgePaint.setStrokeWidth(1f);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            barRect.set(0, 0, w, h);
+
+            // Layer 1: Frosted base
+            if (isLightTheme) {
+                basePaint.setColor(0xE8FFFFFF);
+            } else {
+                basePaint.setColor(0xE82C2C2E);
+            }
+            canvas.drawRoundRect(barRect, cr, cr, basePaint);
+
+            // Layer 2: Top specular highlight (liquid glass shine)
+            float specH = h * 0.45f;
+            int specTop = isLightTheme ? 0x30FFFFFF : 0x20FFFFFF;
+            specPaint.setShader(new LinearGradient(
+                    0, 0, 0, specH,
+                    new int[]{specTop, 0x00000000},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(barRect, cr, cr, specPaint);
+
+            // Layer 3: Bottom subtle glow
+            float rimH = h * 0.3f;
+            int rimBot = isLightTheme ? 0x15000000 : 0x10FFFFFF;
+            rimPaint.setShader(new LinearGradient(
+                    0, h - rimH, 0, h,
+                    new int[]{0x00000000, rimBot},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(barRect, cr, cr, rimPaint);
+
+            // Layer 4: Edge rim light
+            edgePaint.setColor(isLightTheme ? 0x40000000 : 0x30FFFFFF);
+            canvas.drawRoundRect(barRect, cr, cr, edgePaint);
+
+            // Layer 5: Inner top glow (subtle warm light from above)
+            float innerH = 2f;
+            int innerC = isLightTheme ? 0x20FFFFFF : 0x15FFFFFF;
+            innerGlowPaint.setShader(new LinearGradient(
+                    0, 0, 0, innerH,
+                    new int[]{innerC, 0x00000000},
+                    null, Shader.TileMode.CLAMP));
+            innerGlowPaint.setStyle(Paint.Style.FILL);
+            canvas.drawRoundRect(new RectF(1, 1, w - 1, innerH), cr, cr, innerGlowPaint);
+        }
+    }
+
     private void buildBottomBar() {
         // ── Floating container with outer padding (the "float" effect) ──
         FrameLayout floatContainer = new FrameLayout(this);
@@ -980,28 +1070,24 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         // Drop shadow for glass float effect
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            floatContainer.setOutlineAmbientShadowColor(0x1A000000);
-            floatContainer.setOutlineSpotShadowColor(0x22000000);
-            floatContainer.setElevation(dp(12));
+            floatContainer.setOutlineAmbientShadowColor(0x20000000);
+            floatContainer.setOutlineSpotShadowColor(0x30000000);
+            floatContainer.setElevation(dp(16));
         }
 
-        bottomBar = new LinearLayout(this);
-        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
-        bottomBar.setGravity(Gravity.CENTER);
-        bottomBar.setClipChildren(false);
+        // Use a FrameLayout to layer the glass background behind the buttons
+        FrameLayout barFrame = new FrameLayout(this);
 
-        // ── Apple Liquid Glass background (white theme default) ──
-        float cornerR = dp(28);
-        GradientDrawable bg = new GradientDrawable();
-        if (isLightTheme) {
-            // Liquid glass: bright white frosted with subtle gradient
-            bg.setColor(0xE6FFFFFF);
-        } else {
-            bg.setColor(0xD92C2C2E);
-        }
-        bg.setCornerRadius(cornerR);
-        bottomBar.setBackground(bg);
-        bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
+        // Glass background layer
+        GlassBarView glassBg = new GlassBarView(this);
+        barFrame.addView(glassBg, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // Button row on top of glass
+        LinearLayout buttonRow = new LinearLayout(this);
+        buttonRow.setOrientation(LinearLayout.HORIZONTAL);
+        buttonRow.setGravity(Gravity.CENTER);
+        buttonRow.setPadding(dp(12), dp(10), dp(12), dp(10));
 
         // ── Buttons ──
         int btnSize = dp(56);
@@ -1054,15 +1140,17 @@ public class MainActivity extends Activity implements SensorEventListener {
         LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(btnSize, dp(52));
         btnLp.weight = 1;
 
-        bottomBar.addView(lockBtn, btnLp);
-        bottomBar.addView(pauseBtn, btnLp);
-        bottomBar.addView(unitBtn, btnLp);
-        bottomBar.addView(moreBtn, btnLp);
+        buttonRow.addView(lockBtn, btnLp);
+        buttonRow.addView(pauseBtn, btnLp);
+        buttonRow.addView(unitBtn, btnLp);
+        buttonRow.addView(moreBtn, btnLp);
 
-        floatContainer.addView(bottomBar, new FrameLayout.LayoutParams(
+        barFrame.addView(buttonRow, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Store floatContainer for use in buildUI
+        floatContainer.addView(barFrame, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         bottomBarFloat = floatContainer;
     }
 
@@ -1433,8 +1521,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             recordCountText.setText("0 条数据");
         }
         if (recordTimeText != null) {
-            recordTimeText.setVisibility(View.GONE);
-            recordTimeText.setText("");
+            recordTimeText.setText("0:00");
+        }
+        if (recordDistText != null) {
+            recordDistText.setText("");
         }
         recordStartTime = 0;
         if (continuousBtn != null) continuousBtn.setLabel("连续模式");
