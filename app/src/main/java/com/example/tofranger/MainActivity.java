@@ -129,7 +129,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     /**
      * Frosted glass card with semi-transparent bg, shine gradient, edge highlight, shadow.
      */
-    static class GlassCard extends View {
+    static class GlassCard extends FrameLayout {
 
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint shinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -142,6 +142,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         public GlassCard(Context ctx) {
             super(ctx);
             setWillNotDraw(false);
+            setClipChildren(false);
             cornerRadius = 24f;
             bgPaint.setColor(C_GLASS_BG);
             bgPaint.setStyle(Paint.Style.FILL);
