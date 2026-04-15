@@ -63,8 +63,8 @@ public class GlassButtonView extends View {
         super.onDraw(canvas);
         float w = getWidth();
         float h = getHeight();
-        canvas.save();
-        canvas.scale(getScaleX(), getScaleY(), w / 2f, h / 2f);
+
+
 
         float cx = w / 2f;
         float iconSize = Math.min(w, h) * 0.38f;
@@ -96,7 +96,7 @@ public class GlassButtonView extends View {
                     iconPaint.setColor(Color.argb(0x30, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
                     RectF edge = new RectF(bgR.left, bgR.bottom - dp(2), bgR.right, bgR.bottom);
                     canvas.drawRoundRect(edge, dp(12), dp(12), iconPaint);
-                    labelPaint.setColor(light ? ThemeColors.TEXT : ThemeColors.TEXT);
+                    labelPaint.setColor(ThemeColors.TEXT);
                     labelPaint.setTextSize(dp(13));
                     Paint.FontMetrics fm = labelPaint.getFontMetrics();
                     float ty = h / 2f - (fm.ascent + fm.descent) / 2f;
@@ -112,7 +112,7 @@ public class GlassButtonView extends View {
             float labelY = h * 0.82f - (fm.ascent + fm.descent) / 2f;
             canvas.drawText(label, cx, labelY, labelPaint);
         }
-        canvas.restore();
+
     }
 
     private void drawLockIcon(Canvas c, float cx, float cy, float s) {
