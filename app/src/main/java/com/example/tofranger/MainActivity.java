@@ -93,7 +93,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     // ── State ──
     private float currentDistance = -1;
-    private float filteredDistance = -1;
+    private volatile float filteredDistance = -1;
     private boolean isLocked = false;
     private boolean isPaused = false;
     private boolean isMm = true; // true=mm, false=inch
@@ -102,6 +102,16 @@ public class MainActivity extends Activity implements SensorEventListener {
     private boolean continuousMode = false;
     private long lastContinuousCsv = 0;
     private static final long CONTINUOUS_CSV_INTERVAL_MS = 200;
+
+    // UI update throttle — coalesce rapid sensor events into one UI refresh
+    private static final long UI_UPDATE_INTERVAL_MS = 50; // max 20 fps
+    private long lastUiUpdateMs = 0;
+    private boolean uiUpdatePending = false;
+    private final Runnable uiUpdateRunnable = () -> {
+        uiUpdatePending = false;
+        lastUiUpdateMs = System.currentTimeMillis();
+        if (filteredDistance >= 0) updateDisplay(filteredDistance);
+    };
 
     // ── Filter & Stats ──
     private DistanceFilter filter;
@@ -935,12 +945,16 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         stats.add(filteredDistance);
 
-        final float dist = filteredDistance;
-        runOnUiThread(() -> updateDisplay(dist));
+        // Throttled UI update: post at most once per UI_UPDATE_INTERVAL_MS
+        // Latest filteredDistance is always stored; the Runnable reads it
+        long now = System.currentTimeMillis();
+        if (!uiUpdatePending && (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS)) {
+            uiUpdatePending = true;
+            runOnUiThread(uiUpdateRunnable);
+        }
 
         // Continuous CSV recording
         if (continuousMode && isRecording) {
-            long now = System.currentTimeMillis();
             if (now - lastContinuousCsv >= CONTINUOUS_CSV_INTERVAL_MS) {
                 csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
                 lastContinuousCsv = now;
