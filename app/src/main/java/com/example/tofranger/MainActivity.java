@@ -9,6 +9,8 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -229,34 +231,40 @@ public class MainActivity extends Activity implements SensorEventListener {
      */
     class GlassButton extends View {
 
+        private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint reflectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
+        private int iconType = 0; // 0=lock, 1=pause/play, 2=ruler, 3=sun/moon
         private String label = "";
         private int accentColor = C_ACCENT;
-        private boolean round = false;
+        private boolean active = false;
         private boolean pressed = false;
         private float pressScale = 1f;
         private Runnable onPress;
+
+        // Icon types
+        static final int ICON_LOCK = 0;
+        static final int ICON_PAUSE = 1;
+        static final int ICON_RULER = 2;
+        static final int ICON_THEME = 3;
 
         public GlassButton(Context ctx) {
             super(ctx);
             setWillNotDraw(false);
             setClickable(true);
             setFocusable(true);
-            setLayerType(LAYER_TYPE_SOFTWARE, null);
+
+            iconPaint.setStyle(Paint.Style.STROKE);
+            iconPaint.setStrokeCap(Paint.Cap.ROUND);
+            iconPaint.setStrokeJoin(Paint.Join.ROUND);
+            iconPaint.setTextAlign(Paint.Align.CENTER);
 
             bgPaint.setStyle(Paint.Style.FILL);
-            glowPaint.setStyle(Paint.Style.STROKE);
-            glowPaint.setStrokeWidth(2f);
-            glowPaint.setMaskFilter(new BlurMaskFilter(8f, BlurMaskFilter.Blur.SOLID));
-            textPaint.setColor(C_TEXT);
-            textPaint.setTypeface(Typeface.DEFAULT);
-            textPaint.setTextAlign(Paint.Align.CENTER);
-            textPaint.setAntiAlias(true);
-            reflectionPaint.setStyle(Paint.Style.FILL);
+
+            labelPaint.setTextAlign(Paint.CENTER);
+            labelPaint.setAntiAlias(true);
+            labelPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         }
 
         public void setAccentColor(int color) {
@@ -269,8 +277,18 @@ public class MainActivity extends Activity implements SensorEventListener {
             invalidate();
         }
 
+        public void setIconType(int type) {
+            this.iconType = type;
+            invalidate();
+        }
+
+        public void setActive(boolean a) {
+            this.active = a;
+            invalidate();
+        }
+
         public void setRound(boolean r) {
-            this.round = r;
+            // kept for compatibility; icon buttons ignore this
             invalidate();
         }
 
@@ -283,38 +301,170 @@ public class MainActivity extends Activity implements SensorEventListener {
             super.onDraw(canvas);
             float w = getWidth();
             float h = getHeight();
-            float r = round ? Math.min(w, h) / 2f : 16f;
 
             canvas.save();
             canvas.scale(pressScale, pressScale, w / 2f, h / 2f);
 
-            rect.set(2, 2, w - 2, h - 2);
+            float cx = w / 2f;
+            float iconSize = Math.min(w, h) * 0.38f;
+            float strokeW = dp(1.8f);
+            iconPaint.setStrokeWidth(strokeW);
 
-            // BG with accent tint
-            bgPaint.setColor(Color.argb(0x22, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
-            canvas.drawRoundRect(rect, r, r, bgPaint);
+            // Active/inactive color
+            int iconColor = active ? accentColor : (isLightTheme ? 0xFF8E8E93 : 0xFF8E8E93);
+            iconPaint.setColor(iconColor);
 
-            // Glass reflection (top half)
-            int refTop = isLightTheme ? 0x18000000 : 0x18FFFFFF;
-            int refBot = 0x00000000;
-            reflectionPaint.setShader(new LinearGradient(
-                    rect.left, rect.top, rect.left, rect.top + rect.height() * 0.45f,
-                    refTop, refBot, Shader.TileMode.CLAMP));
-            canvas.drawRoundRect(rect, r, r, reflectionPaint);
+            // Icon center Y (shifted up to make room for label)
+            float iconCy = h * 0.38f;
 
-            // Glow edge
-            glowPaint.setColor(Color.argb(0x40, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
-            canvas.drawRoundRect(rect, r, r, glowPaint);
+            // Draw the appropriate icon
+            switch (iconType) {
+                case ICON_LOCK: drawLockIcon(canvas, cx, iconCy, iconSize); break;
+                case ICON_PAUSE: drawPauseIcon(canvas, cx, iconCy, iconSize); break;
+                case ICON_RULER: drawRulerIcon(canvas, cx, iconCy, iconSize); break;
+                case ICON_THEME: drawThemeIcon(canvas, cx, iconCy, iconSize); break;
+                default:
+                    // Text-only button (for more panel)
+                    if (!label.isEmpty()) {
+                        iconPaint.setStyle(Paint.Style.STROKE);
+                        RectF bgR = new RectF(4, 4, w - 4, h - 4);
+                        int bgColor = Color.argb(0x15, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor));
+                        iconPaint.setColor(bgColor);
+                        iconPaint.setStyle(Paint.Style.FILL);
+                        c.drawRoundRect(bgR, dp(12), dp(12), iconPaint);
+                        iconPaint.setStyle(Paint.Style.STROKE);
 
-            // Text
+                        // Accent edge
+                        iconPaint.setColor(Color.argb(0x30, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
+                        RectF edge = new RectF(bgR.left, bgR.bottom - dp(2), bgR.right, bgR.bottom);
+                        c.drawRoundRect(edge, dp(12), dp(12), iconPaint);
+
+                        labelPaint.setColor(isLightTheme ? C_TEXT_LIGHT : C_TEXT_DARK);
+                        labelPaint.setTextSize(dp(13));
+                        Paint.FontMetrics fm = labelPaint.getFontMetrics();
+                        float ty = h / 2f - (fm.ascent + fm.descent) / 2f;
+                        c.drawText(label, cx, ty, labelPaint);
+                    }
+                    break;
+            }
+
+            // Label below icon
             if (!label.isEmpty()) {
-                textPaint.setTextSize(Math.min(w, h) * 0.32f);
-                Paint.FontMetrics fm = textPaint.getFontMetrics();
-                float textY = h / 2f - (fm.ascent + fm.descent) / 2f;
-                canvas.drawText(label, w / 2f, textY, textPaint);
+                labelPaint.setColor(iconColor);
+                labelPaint.setTextSize(dp(9));
+                Paint.FontMetrics fm = labelPaint.getFontMetrics();
+                float labelY = h * 0.82f - (fm.ascent + fm.descent) / 2f;
+                canvas.drawText(label, cx, labelY, labelPaint);
             }
 
             canvas.restore();
+        }
+
+        // Lock icon: open or closed padlock
+        private void drawLockIcon(Canvas c, float cx, float cy, float s) {
+            float hw = s * 0.35f; // half width of body
+            float bh = s * 0.3f;  // body height
+            float bodyTop = cy - bh * 0.1f;
+            float bodyBot = bodyTop + bh;
+
+            // Shackle (U-shape on top)
+            float shackW = hw * 0.65f;
+            float shackH = s * 0.25f;
+            float shackTop = bodyTop - shackH;
+
+            if (active) {
+                // Locked: shackle attached
+                c.drawArc(cx - shackW, shackTop, cx + shackW, bodyTop, 180, 180, false, iconPaint);
+            } else {
+                // Unlocked: shackle tilted
+                c.drawArc(cx - shackW, shackTop - s * 0.05f, cx + shackW + s * 0.08f, bodyTop, 200, 160, false, iconPaint);
+            }
+
+            // Body (rounded rect)
+            RectF body = new RectF(cx - hw, bodyTop, cx + hw, bodyBot);
+            c.drawRoundRect(body, dp(3), dp(3), iconPaint);
+
+            // Keyhole
+            float kcx = cx;
+            float kcy = bodyTop + bh * 0.5f;
+            c.drawCircle(kcx, kcy, s * 0.06f, iconPaint);
+            c.drawLine(kcx, kcy + s * 0.06f, kcx, kcy + s * 0.15f, iconPaint);
+        }
+
+        // Pause icon: two vertical bars, or play triangle when active
+        private void drawPauseIcon(Canvas c, float cx, float cy, float s) {
+            if (active) {
+                // Play triangle
+                float sz = s * 0.35f;
+                Path tri = new Path();
+                tri.moveTo(cx - sz * 0.4f, cy - sz);
+                tri.lineTo(cx - sz * 0.4f, cy + sz);
+                tri.lineTo(cx + sz * 0.7f, cy);
+                tri.close();
+                iconPaint.setStyle(Paint.Style.FILL);
+                c.drawPath(tri, iconPaint);
+                iconPaint.setStyle(Paint.Style.STROKE);
+            } else {
+                // Pause bars
+                float bw = s * 0.12f;
+                float bh = s * 0.6f;
+                float gap = s * 0.18f;
+                RectF bar1 = new RectF(cx - gap - bw, cy - bh / 2f, cx - gap, cy + bh / 2f);
+                RectF bar2 = new RectF(cx + gap, cy - bh / 2f, cx + gap + bw, cy + bh / 2f);
+                iconPaint.setStyle(Paint.Style.FILL);
+                c.drawRoundRect(bar1, dp(2), dp(2), iconPaint);
+                c.drawRoundRect(bar2, dp(2), dp(2), iconPaint);
+                iconPaint.setStyle(Paint.Style.STROKE);
+            }
+        }
+
+        // Ruler icon: horizontal line with tick marks
+        private void drawRulerIcon(Canvas c, float cx, float cy, float s) {
+            float hw = s * 0.45f;
+            float hh = s * 0.22f;
+
+            // Main outline
+            RectF body = new RectF(cx - hw, cy - hh, cx + hw, cy + hh);
+            c.drawRoundRect(body, dp(2), dp(2), iconPaint);
+
+            // Tick marks
+            float tickH = hh * 0.6f;
+            for (int i = -2; i <= 2; i++) {
+                float x = cx + i * (hw * 0.4f);
+                float tickLen = (i == 0) ? hh : tickH * 0.6f;
+                c.drawLine(x, cy - tickLen, x, cy + tickLen, iconPaint);
+            }
+        }
+
+        // Sun/Moon icon
+        private void drawThemeIcon(Canvas c, float cx, float cy, float s) {
+            float r = s * 0.22f;
+            if (active) {
+                // Moon (dark mode active → show moon)
+                Path moon = new Path();
+                float mr = r * 1.1f;
+                moon.addCircle(cx - mr * 0.3f, cy, mr, Path.Direction.CW);
+                Path cutout = new Path();
+                cutout.addCircle(cx + mr * 0.4f, cy - mr * 0.15f, mr * 0.75f, Path.Direction.CW);
+                moon.op(cutout, Path.Op.DIFFERENCE);
+                iconPaint.setStyle(Paint.Style.FILL);
+                c.drawPath(moon, iconPaint);
+                iconPaint.setStyle(Paint.Style.STROKE);
+            } else {
+                // Sun (light mode active → show sun)
+                c.drawCircle(cx, cy, r, iconPaint);
+                // Rays
+                float rayLen = r * 0.5f;
+                float rayStart = r * 1.25f;
+                for (int i = 0; i < 8; i++) {
+                    double angle = Math.PI * 2 * i / 8;
+                    float x1 = cx + (float) Math.cos(angle) * rayStart;
+                    float y1 = cy + (float) Math.sin(angle) * rayStart;
+                    float x2 = cx + (float) Math.cos(angle) * (rayStart + rayLen);
+                    float y2 = cy + (float) Math.sin(angle) * (rayStart + rayLen);
+                    c.drawLine(x1, y1, x2, y2, iconPaint);
+                }
+            }
         }
 
         @Override
@@ -347,10 +497,10 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         private void animatePress(boolean down) {
             animate()
-                    .scaleX(down ? 0.92f : 1f)
-                    .scaleY(down ? 0.92f : 1f)
-                    .setDuration(down ? 100 : 350)
-                    .setInterpolator(down ? new AccelerateDecelerateInterpolator() : new OvershootInterpolator(3f))
+                    .scaleX(down ? 0.88f : 1f)
+                    .scaleY(down ? 0.88f : 1f)
+                    .setDuration(down ? 80 : 300)
+                    .setInterpolator(down ? new AccelerateDecelerateInterpolator() : new OvershootInterpolator(2.5f))
                     .start();
         }
     }
@@ -627,33 +777,58 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
-        bottomBar.setBackgroundColor(C_BAR_BG);
-        bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
 
-        int btnSize = dp(56);
-        lockBtn = makeRoundButton("L", C_ACCENT);
+        // Frosted glass background with rounded top corners
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(isLightTheme ? 0xCCF2F2F7 : 0xCC1C1C1E);
+        bg.setCornerRadii(new float[]{dp(24), dp(24), dp(24), dp(24), 0, 0, 0, 0});
+        bottomBar.setBackground(bg);
+        bottomBar.setPadding(dp(16), dp(10), dp(16), dp(10));
+
+        // Top edge highlight
+        View topEdge = new View(this);
+        topEdge.setBackgroundColor(isLightTheme ? 0x33000000 : 0x33FFFFFF);
+
+        int btnSize = dp(60);
+
+        lockBtn = new GlassButton(this);
+        lockBtn.setIconType(GlassButton.ICON_LOCK);
+        lockBtn.setLabel("锁定");
+        lockBtn.setAccentColor(C_ACCENT);
+        lockBtn.setActive(isLocked);
         lockBtn.setOnPress(() -> {
             isLocked = !isLocked;
             updateLockButton();
             vibrate(30);
         });
 
-        pauseBtn = makeRoundButton("P", C_ACCENT2);
+        pauseBtn = new GlassButton(this);
+        pauseBtn.setIconType(GlassButton.ICON_PAUSE);
+        pauseBtn.setLabel("暂停");
+        pauseBtn.setAccentColor(C_ACCENT2);
+        pauseBtn.setActive(isPaused);
         pauseBtn.setOnPress(() -> {
             isPaused = !isPaused;
             updatePauseButton();
             vibrate(30);
         });
 
-
-        unitBtn = makeRoundButton("cm", C_ACCENT3);
+        unitBtn = new GlassButton(this);
+        unitBtn.setIconType(GlassButton.ICON_RULER);
+        unitBtn.setLabel("cm");
+        unitBtn.setAccentColor(C_ACCENT3);
+        unitBtn.setActive(false);
         unitBtn.setOnPress(() -> {
             unitMode = (unitMode + 1) % 3;
             updateUnitDisplay();
             vibrate(30);
         });
 
-        themeBtn = makeRoundButton(isLightTheme ? "N" : "D", C_TEXT_DIM);
+        themeBtn = new GlassButton(this);
+        themeBtn.setIconType(GlassButton.ICON_THEME);
+        themeBtn.setLabel(isLightTheme ? "深色" : "浅色");
+        themeBtn.setAccentColor(C_TEXT_DIM);
+        themeBtn.setActive(isLightTheme);
         themeBtn.setOnPress(() -> {
             isLightTheme = !isLightTheme;
             applyTheme(isLightTheme);
@@ -661,21 +836,13 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
-        LinearLayout.LayoutParams roundLp = new LinearLayout.LayoutParams(btnSize, btnSize);
-        roundLp.setMargins(dp(10), 0, dp(10), 0);
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(btnSize, dp(52));
+        btnLp.weight = 1;
 
-        bottomBar.addView(lockBtn, roundLp);
-        bottomBar.addView(pauseBtn, roundLp);
-        bottomBar.addView(unitBtn, roundLp);
-        bottomBar.addView(themeBtn, roundLp);
-    }
-
-    private GlassButton makeRoundButton(String label, int accent) {
-        GlassButton btn = new GlassButton(this);
-        btn.setLabel(label);
-        btn.setAccentColor(accent);
-        btn.setRound(true);
-        return btn;
+        bottomBar.addView(lockBtn, btnLp);
+        bottomBar.addView(pauseBtn, btnLp);
+        bottomBar.addView(unitBtn, btnLp);
+        bottomBar.addView(themeBtn, btnLp);
     }
 
     private void buildMorePanel() {
@@ -762,13 +929,15 @@ public class MainActivity extends Activity implements SensorEventListener {
     private static final String[] UNIT_LABELS = {"cm", "mm", "in"};
 
     private void updateLockButton() {
-        lockBtn.setLabel(isLocked ? "U" : "L");
+        lockBtn.setActive(isLocked);
+        lockBtn.setLabel("锁定");
         lockBtn.setAccentColor(isLocked ? 0xFFFF453A : C_ACCENT);
         distanceCard.setAccentTint(isLocked ? 0xFFFF453A : C_ACCENT);
     }
 
     private void updatePauseButton() {
-        pauseBtn.setLabel(isPaused ? "R" : "P");
+        pauseBtn.setActive(isPaused);
+        pauseBtn.setLabel(isPaused ? "继续" : "暂停");
     }
 
     private void updateUnitDisplay() {
