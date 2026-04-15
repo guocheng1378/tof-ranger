@@ -141,7 +141,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     private GlassButton pauseBtn;
     private GlassButton unitBtn;
     private GlassButton resetBtn;
-    private GlassButton moreBtn;
 
     // More panel buttons
     private GlassButton debugBtn;
@@ -461,10 +460,16 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
             isLocked = !isLocked;
             updateLockButton();
             vibrate(50);
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            moreExpanded = !moreExpanded;
+            updateMorePanel();
+            vibrate(30);
             return true;
         }
         return super.onKeyDown(keyCode, event);
@@ -622,9 +627,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar.setBackgroundColor(C_BAR_BG);
         bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
 
-        int btnSize = dp(52);
-        int smallBtnSize = dp(40);
-
+        int btnSize = dp(56);
         lockBtn = makeRoundButton("🔒", C_ACCENT);
         lockBtn.setOnPress(() -> {
             isLocked = !isLocked;
@@ -639,6 +642,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
+
         unitBtn = makeRoundButton("mm", C_ACCENT3);
         unitBtn.setOnPress(() -> {
             isMm = !isMm;
@@ -646,30 +650,21 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
-        resetBtn = makeRoundButton("↺", 0xFFFF453A);
-        resetBtn.setOnPress(() -> {
-            resetMeasurement();
-            vibrate(50);
-        });
-
-        moreBtn = makeRoundButton("⋯", C_TEXT_DIM);
-        moreBtn.setRound(true);
-        moreBtn.setOnPress(() -> {
-            moreExpanded = !moreExpanded;
-            updateMorePanel();
+        themeBtn = makeRoundButton(isLightTheme ? "🌙" : "☀️", C_TEXT_DIM);
+        themeBtn.setOnPress(() -> {
+            isLightTheme = !isLightTheme;
+            applyTheme(isLightTheme);
+            rebuildUI();
             vibrate(30);
         });
 
         LinearLayout.LayoutParams roundLp = new LinearLayout.LayoutParams(btnSize, btnSize);
-        roundLp.setMargins(dp(8), 0, dp(8), 0);
-        LinearLayout.LayoutParams smallLp = new LinearLayout.LayoutParams(smallBtnSize, smallBtnSize);
-        smallLp.setMargins(dp(8), 0, dp(8), 0);
+        roundLp.setMargins(dp(10), 0, dp(10), 0);
 
         bottomBar.addView(lockBtn, roundLp);
         bottomBar.addView(pauseBtn, roundLp);
         bottomBar.addView(unitBtn, roundLp);
-        bottomBar.addView(resetBtn, roundLp);
-        bottomBar.addView(moreBtn, smallLp);
+        bottomBar.addView(themeBtn, roundLp);
     }
 
     private GlassButton makeRoundButton(String label, int accent) {
@@ -697,6 +692,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         mlp.bottomMargin = dp(72); // above bottom bar
 
         int rowHeight = dp(44);
+
+        resetBtn = makeFlatButton("↺ 重置数据", 0xFFFF453A);
+        resetBtn.setOnPress(() -> {
+            resetMeasurement();
+            moreExpanded = false;
+            updateMorePanel();
+            vibrate(50);
+        });
 
         debugBtn = makeFlatButton("调试信息", C_ACCENT);
         debugBtn.setOnPress(() -> {
@@ -731,22 +734,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
-        themeBtn = makeFlatButton(isLightTheme ? "🌙 深色主题" : "☀️ 浅色主题", C_TEXT_DIM);
-        themeBtn.setOnPress(() -> {
-            isLightTheme = !isLightTheme;
-            applyTheme(isLightTheme);
-            rebuildUI();
-            vibrate(30);
-        });
-
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, rowHeight);
         rowLp.setMargins(0, dp(4), 0, dp(4));
+        morePanel.addView(resetBtn, rowLp);
         morePanel.addView(debugBtn, rowLp);
         morePanel.addView(calibrateBtn, rowLp);
         morePanel.addView(csvBtn, rowLp);
         morePanel.addView(continuousBtn, rowLp);
-        morePanel.addView(themeBtn, rowLp);
     }
 
     private GlassButton makeFlatButton(String label, int accent) {
@@ -786,8 +781,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         rootLayout.removeAllViews();
         buildUI();
         setContentView(rootLayout);
-        themeBtn.setLabel(isLightTheme ? "🌙 深色主题" : "☀️ 浅色主题");
-        themeBtn.setAccentColor(C_TEXT_DIM);
         // Restore state display
         if (currentDistance >= 0) updateDisplay(currentDistance);
         updateLockButton();
