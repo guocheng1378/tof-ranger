@@ -27,7 +27,6 @@ import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -56,1121 +55,929 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements SensorEventListener {
 
-    // 小米自定义 ToF 传感器类型（非 AOSP 标准，由 MIUI/HyperOS 定义）
-    // 已知值：33171040（MIUI 12-14）、以及可能的新值
-    // 策略：优先用硬编码值，找不到时遍历全部传感器按名称匹配
-    private static final int[] KNOWN_TOF_TYPES = {33171040, 33171041, 65570, 65572};
-
-    // Unit modes
-    private static final int UNIT_MM = 0, UNIT_CM = 1, UNIT_M = 2, UNIT_INCH = 3;
-    private static final String[] UNIT_LABELS = {"mm", "cm", "m", "in"};
-    private int currentUnit = UNIT_CM;
-
-    // State
-    private boolean isHolding = false;
-
-    // Signal processing
-    private DistanceFilter primaryFilter = new DistanceFilter(5, 0.5f, 0, 0);
-
-    // Statistics
-    private DistanceStats stats = new DistanceStats(100);
-
-    // Sensor
+    // ── Colors ──
+    private static final int C_BG        = Color.BLACK;
+    private static final int C_ACCENT    = 0xFF5AC8FA; // blue
+    private static final int C_ACCENT2   = 0xFF34C759; // green
+    private static final int C_ACCENT3   = 0xFFFF9F0A; // orange
+    private static final int C_TEXT      = 0xFFFFFFFF;
+    private static final int C_TEXT_DIM  = 0x99FFFFFF;
+    private static final int C_GLASS_BG  = 0x1AFFFFFF;
+    private static final int C_GLASS_EDGE= 0x33FFFFFF;
+    private static final int C_GLASS_SHINE= 0x0CFFFFFF;
+    // ── Sensor ──
     private SensorManager sensorManager;
     private Sensor tofSensor;
-    private Sensor accelerometer;
-    private Sensor gyroscope;
-    private boolean isProximityFallback = false;
-    private int detectedTofType = 0; // 实际探测到的传感器 type
+    private Sensor accelSensor;
+    private Sensor gyroSensor;
+    private boolean sensorRegistered = false;
 
-    // 单位换算：传感器原始值 × unitScale = mm
-    // VL53L1X / VL53L0X 原生输出就是 mm，不需要换算
-    // 保留校准功能让用户手动修正
-    private float unitScale = 1f;
-    private boolean isCalibrated = false;
-
-    // Warm-up（跳过前几个不稳定样本）
-    private int warmUpCount = 0;
-    private static final int WARM_UP_SAMPLES = 3;
-
-    // Lock
-    private float lockedDistanceMm = -1;
+    // ── State ──
+    private float currentDistance = -1;
+    private float filteredDistance = -1;
     private boolean isLocked = false;
-
-    // Continuous
+    private boolean isPaused = false;
+    private boolean isMm = true; // true=mm, false=inch
+    private boolean moreExpanded = false;
+    private boolean debugVisible = false;
     private boolean continuousMode = false;
-    private final ArrayList<MeasurementRecord> continuousRecords = new ArrayList<>();
-    private float lastStableValue = -1;
-    private long lastStableTime = 0;
-    private static final long STABLE_THRESHOLD_MS = 1500;
-    private static final float STABLE_RANGE_MM = 15;
+    private long lastContinuousCsv = 0;
+    private static final long CONTINUOUS_CSV_INTERVAL_MS = 200;
 
-    // Calibration
-    private float calRawSum = 0;
-    private int calRawCount = 0;
-    private boolean isCollectingCal = false;
-
-    // Vibration
-    private Vibrator vibrator;
-
-    // Shake detection + Tilt compensation
+    // ── Filter & Stats ──
+    private DistanceFilter filter;
+    private DistanceStats stats;
     private ShakeDetector shakeDetector;
     private TiltCompensator tiltCompensator;
-    private boolean lastShakeState = false;
 
-    // UI
-    private TextView tvDistance, tvUnit, tvRawInfo, tvStatus;
-    private TextView tvStats, tvHz, tvHoldLabel, tvSensorInfo;
-    private TextView tvQuality, tvConfidenceBar;
-    private TextView tvLockedInfo;
-    private TextView tvContinuousInfo;
-    private TextView tvSensorDebug;
-    private TextView tvHorizontalInfo;
+    // ── CSV ──
+    private List<float[]> csvData = new ArrayList<>();
+    private boolean isRecording = false;
 
-    // Buttons
-    private View btnHold, btnReset, btnUnit;
-    private View btnCapture, btnContinuous, btnExportCSV, btnCalibrate;
+    // ── UI ──
+    private FrameLayout rootLayout;
+    private ScrollView scrollView;
+    private LinearLayout contentLayout;
+    private LinearLayout bottomBar;
+    private LinearLayout morePanel;
 
-    // Cards
-    private LinearLayout cardContinuous;
-    private LinearLayout listContinuous;
+    // Distance display
+    private GlassCard distanceCard;
+    private TextView valueText;
+    private TextView unitText;
+    private TextView statusText;
+    private QualityBarView qualityBar;
+    private TextView debugText;
 
-    // Colors
-    private static final int C_BG = 0xFF0A0A1A;
-    private static final int C_ACCENT = 0xFF00E5A0;
-    private static final int C_WARN = 0xFFFFB800;
-    private static final int C_ERR = 0xFFFF4466;
-    private static final int C_TEXT = 0xFFE0E8F0;
-    private static final int C_DIM = 0xFF4A5568;
-    private static final int C_CARD = 0xFF1A1F2E;
-    private static final int C_CARD_BORDER = 0xFF2D3548;
-    private static final int C_GOOD = 0xFF00E5A0;
-    private static final int C_FAIR = 0xFFFFB800;
-    private static final int C_POOR = 0xFFFF4466;
-    private static final int C_BLUE = 0xFF3B82F6;
-    private static final int C_GREEN = 0xFF059669;
-    private static final int C_ORANGE = 0xFFF97316;
+    // Bottom buttons
+    private GlassButton lockBtn;
+    private GlassButton pauseBtn;
+    private GlassButton unitBtn;
+    private GlassButton resetBtn;
+    private GlassButton moreBtn;
 
-    private long lastUiUpdate = 0;
-    private int eventCount = 0;
-    private float lastFilteredMm = -1;
-    private float lastRawSensorValue = -1;
+    // More panel buttons
+    private GlassButton debugBtn;
+    private GlassButton calibrateBtn;
+    private GlassButton csvBtn;
+    private GlassButton continuousBtn;
+
+    // ─────────────────────────────────────────────
+    //  Inner classes: GlassCard, GlassButton, QualityBarView
+    // ─────────────────────────────────────────────
+
+    /**
+     * Frosted glass card with semi-transparent bg, shine gradient, edge highlight, shadow.
+     */
+    static class GlassCard extends View {
+
+        private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint shinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint edgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private float cornerRadius;
+        private int accentTint = 0;
+
+        public GlassCard(Context ctx) {
+            super(ctx);
+            setWillNotDraw(false);
+            cornerRadius = 24f;
+            bgPaint.setColor(C_GLASS_BG);
+            bgPaint.setStyle(Paint.Style.FILL);
+            edgePaint.setColor(C_GLASS_EDGE);
+            edgePaint.setStyle(Paint.Style.STROKE);
+            edgePaint.setStrokeWidth(1.5f);
+            shadowPaint.setColor(0x22000000);
+            shadowPaint.setStyle(Paint.Style.FILL);
+            shadowPaint.setMaskFilter(new BlurMaskFilter(16f, BlurMaskFilter.Blur.OUTER));
+            setLayerType(LAYER_TYPE_SOFTWARE, null);
+        }
+
+        public void setAccentTint(int color) {
+            this.accentTint = color;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float r = cornerRadius;
+            rect.set(4, 4, getWidth() - 4, getHeight() - 4);
+
+            // Shadow
+            canvas.drawRoundRect(rect, r, r, shadowPaint);
+
+            // Background
+            canvas.drawRoundRect(rect, r, r, bgPaint);
+
+            // Accent tint bottom edge
+            if (accentTint != 0) {
+                Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                tintPaint.setStyle(Paint.Style.FILL);
+                float edgeH = 3f;
+                RectF bottomEdge = new RectF(rect.left, rect.bottom - edgeH, rect.right, rect.bottom);
+                tintPaint.setColor(accentTint & 0x30FFFFFF);
+                canvas.drawRoundRect(bottomEdge, r, r, tintPaint);
+            }
+
+            // Shine gradient (top half, fading down)
+            shinePaint.setShader(new LinearGradient(
+                    rect.left, rect.top, rect.left, rect.top + rect.height() * 0.5f,
+                    new int[]{0x15FFFFFF, 0x00FFFFFF},
+                    null, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, shinePaint);
+
+            // Edge highlight
+            canvas.drawRoundRect(rect, r, r, edgePaint);
+        }
+    }
+
+    /**
+     * Liquid glass floating button with accent tint, glass reflection, glow edge, press animation.
+     */
+    static class GlassButton extends View {
+
+        private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint reflectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private String label = "";
+        private int accentColor = C_ACCENT;
+        private boolean round = false;
+        private boolean pressed = false;
+        private float pressScale = 1f;
+        private Runnable onPress;
+
+        public GlassButton(Context ctx) {
+            super(ctx);
+            setWillNotDraw(false);
+            setClickable(true);
+            setFocusable(true);
+            setLayerType(LAYER_TYPE_SOFTWARE, null);
+
+            bgPaint.setStyle(Paint.Style.FILL);
+            glowPaint.setStyle(Paint.Style.STROKE);
+            glowPaint.setStrokeWidth(2f);
+            glowPaint.setMaskFilter(new BlurMaskFilter(8f, BlurMaskFilter.Blur.SOLID));
+            textPaint.setColor(C_TEXT);
+            textPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+            textPaint.setTextAlign(Paint.Align.CENTER);
+            textPaint.setAntiAlias(true);
+            iconPaint.setColor(C_TEXT);
+            iconPaint.setStyle(Paint.Style.STROKE);
+            iconPaint.setStrokeWidth(2.5f);
+            iconPaint.setAntiAlias(true);
+            reflectionPaint.setStyle(Paint.Style.FILL);
+        }
+
+        public void setAccentColor(int color) {
+            this.accentColor = color;
+            invalidate();
+        }
+
+        public void setLabel(String text) {
+            this.label = text;
+            invalidate();
+        }
+
+        public void setRound(boolean r) {
+            this.round = r;
+            invalidate();
+        }
+
+        public void setOnPress(Runnable r) {
+            this.onPress = r;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            float r = round ? Math.min(w, h) / 2f : 16f;
+
+            canvas.save();
+            canvas.scale(pressScale, pressScale, w / 2f, h / 2f);
+
+            rect.set(2, 2, w - 2, h - 2);
+
+            // BG with accent tint
+            bgPaint.setColor(Color.argb(0x22, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
+            canvas.drawRoundRect(rect, r, r, bgPaint);
+
+            // Glass reflection (top half)
+            reflectionPaint.setShader(new LinearGradient(
+                    rect.left, rect.top, rect.left, rect.top + rect.height() * 0.45f,
+                    0x18FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(rect, r, r, reflectionPaint);
+
+            // Glow edge
+            glowPaint.setColor(Color.argb(0x40, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
+            canvas.drawRoundRect(rect, r, r, glowPaint);
+
+            // Text
+            if (!label.isEmpty()) {
+                textPaint.setTextSize(Math.min(w, h) * 0.32f);
+                Paint.FontMetrics fm = textPaint.getFontMetrics();
+                float textY = h / 2f - (fm.ascent + fm.descent) / 2f;
+                canvas.drawText(label, w / 2f, textY, textPaint);
+            }
+
+            canvas.restore();
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    pressed = true;
+                    animatePress(true);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (pressed) {
+                        animatePress(false);
+                        if (onPress != null) onPress.run();
+                        performClick();
+                    }
+                    pressed = false;
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    pressed = false;
+                    animatePress(false);
+                    return true;
+            }
+            return super.onTouchEvent(event);
+        }
+
+        @Override
+        public boolean performClick() {
+            return super.performClick();
+        }
+
+        private void animatePress(boolean down) {
+            animate()
+                    .scaleX(down ? 0.92f : 1f)
+                    .scaleY(down ? 0.92f : 1f)
+                    .setDuration(down ? 100 : 350)
+                    .setInterpolator(down ? new AccelerateDecelerateInterpolator() : new OvershootInterpolator(3f))
+                    .start();
+        }
+    }
+
+    /**
+     * Simple progress bar showing measurement quality (0-100%).
+     */
+    static class QualityBarView extends View {
+
+        private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF bgRect = new RectF();
+        private final RectF fillRect = new RectF();
+        private float progress = 0; // 0..1
+        private int fillColor = C_ACCENT2;
+
+        public QualityBarView(Context ctx) {
+            super(ctx);
+            bgPaint.setColor(0x1AFFFFFF);
+            bgPaint.setStyle(Paint.Style.FILL);
+            fillPaint.setStyle(Paint.Style.FILL);
+            fillColor = C_ACCENT2;
+        }
+
+        public void setProgress(float p) {
+            this.progress = Math.max(0, Math.min(1, p));
+            invalidate();
+        }
+
+        public void setFillColor(int color) {
+            this.fillColor = color;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float h = getHeight();
+            float r = h / 2f;
+            bgRect.set(0, 0, getWidth(), h);
+            canvas.drawRoundRect(bgRect, r, r, bgPaint);
+
+            float fillW = getWidth() * progress;
+            if (fillW > r * 2) {
+                fillRect.set(0, 0, fillW, h);
+                fillPaint.setColor(fillColor);
+                canvas.drawRoundRect(fillRect, r, r, fillPaint);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    //  Activity lifecycle
+    // ─────────────────────────────────────────────
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().getDecorView().setBackgroundColor(C_BG);
 
-        // Init vibrator
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
-            vibrator = vm.getDefaultVibrator();
-        } else {
-            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-        }
-
-        // Shake + Tilt
+        // Init helpers
+        filter = new DistanceFilter(5, 0.4f, 0, 0);
+        stats = new DistanceStats(200);
         shakeDetector = new ShakeDetector();
         tiltCompensator = new TiltCompensator();
 
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setBackgroundColor(C_BG);
-        scrollView.setFillViewport(true);
+        // Build UI
+        buildUI();
+        setContentView(rootLayout);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(48), dp(20), dp(24));
-        root.setBackgroundColor(C_BG);
-
-        // === Header ===
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView tvTitle = new TextView(this);
-        tvTitle.setText("📐 ToF 测距仪");
-        tvTitle.setTextSize(18);
-        tvTitle.setTextColor(C_TEXT);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        header.addView(tvTitle);
-
-        tvSensorInfo = new TextView(this);
-        tvSensorInfo.setTextSize(10);
-        tvSensorInfo.setTextColor(C_DIM);
-        tvSensorInfo.setGravity(Gravity.END);
-        header.addView(tvSensorInfo, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        root.addView(header);
-        root.addView(makeGap(dp(16)));
-
-        // === Main Distance Card ===
-        LinearLayout distCard = makeCard();
-        distCard.setGravity(Gravity.CENTER_HORIZONTAL);
-        distCard.setPadding(dp(24), dp(32), dp(24), dp(20));
-
-        tvHoldLabel = new TextView(this);
-        tvHoldLabel.setText("● 测量中");
-        tvHoldLabel.setTextSize(11);
-        tvHoldLabel.setTextColor(C_ACCENT);
-        tvHoldLabel.setGravity(Gravity.CENTER);
-        distCard.addView(tvHoldLabel);
-
-        LinearLayout distRow = new LinearLayout(this);
-        distRow.setOrientation(LinearLayout.HORIZONTAL);
-        distRow.setGravity(Gravity.CENTER);
-        distRow.setPadding(0, dp(12), 0, 0);
-
-        tvDistance = new TextView(this);
-        tvDistance.setText("--");
-        tvDistance.setTextSize(72);
-        tvDistance.setTextColor(C_ACCENT);
-        tvDistance.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        distRow.addView(tvDistance);
-
-        tvUnit = new TextView(this);
-        tvUnit.setText(" cm");
-        tvUnit.setTextSize(28);
-        tvUnit.setTextColor(C_ACCENT);
-        tvUnit.setGravity(Gravity.CENTER_VERTICAL);
-        tvUnit.setPadding(dp(4), 0, 0, 0);
-        distRow.addView(tvUnit);
-
-        distCard.addView(distRow);
-
-        tvQuality = new TextView(this);
-        tvQuality.setTextSize(11);
-        tvQuality.setGravity(Gravity.CENTER);
-        tvQuality.setPadding(0, dp(8), 0, 0);
-        distCard.addView(tvQuality);
-
-        tvConfidenceBar = new TextView(this);
-        tvConfidenceBar.setTextSize(10);
-        tvConfidenceBar.setTypeface(Typeface.MONOSPACE);
-        tvConfidenceBar.setTextColor(C_DIM);
-        tvConfidenceBar.setGravity(Gravity.CENTER);
-        tvConfidenceBar.setPadding(0, dp(2), 0, 0);
-        distCard.addView(tvConfidenceBar);
-
-        tvRawInfo = new TextView(this);
-        tvRawInfo.setTextSize(10);
-        tvRawInfo.setTextColor(C_DIM);
-        tvRawInfo.setGravity(Gravity.CENTER);
-        tvRawInfo.setPadding(0, dp(4), 0, 0);
-        distCard.addView(tvRawInfo);
-
-        tvHorizontalInfo = new TextView(this);
-        tvHorizontalInfo.setTextSize(11);
-        tvHorizontalInfo.setTextColor(C_BLUE);
-        tvHorizontalInfo.setGravity(Gravity.CENTER);
-        tvHorizontalInfo.setPadding(0, dp(4), 0, 0);
-        tvHorizontalInfo.setVisibility(View.GONE);
-        distCard.addView(tvHorizontalInfo);
-
-        tvLockedInfo = new TextView(this);
-        tvLockedInfo.setTextSize(11);
-        tvLockedInfo.setTextColor(C_BLUE);
-        tvLockedInfo.setGravity(Gravity.CENTER);
-        tvLockedInfo.setPadding(0, dp(4), 0, 0);
-        tvLockedInfo.setVisibility(View.GONE);
-        distCard.addView(tvLockedInfo);
-
-        root.addView(distCard);
-        root.addView(makeGap(dp(12)));
-
-        // === Sensor Debug ===
-        LinearLayout debugCard = makeCard();
-        debugCard.setPadding(dp(14), dp(10), dp(14), dp(10));
-        tvSensorDebug = new TextView(this);
-        tvSensorDebug.setTextSize(10);
-        tvSensorDebug.setTextColor(C_DIM);
-        tvSensorDebug.setTypeface(Typeface.MONOSPACE);
-        tvSensorDebug.setLineSpacing(dp(2), 1);
-        debugCard.addView(tvSensorDebug);
-        root.addView(debugCard);
-        root.addView(makeGap(dp(12)));
-
-        // === Action buttons ===
-        LinearLayout actionRow = new LinearLayout(this);
-        actionRow.setOrientation(LinearLayout.HORIZONTAL);
-        actionRow.setGravity(Gravity.CENTER);
-        btnCapture = makeSmallButton("📸 锁定", C_BLUE);
-        btnCapture.setContentDescription("锁定当前距离");
-        btnCalibrate = makeSmallButton("🎯 校准", C_GREEN);
-        btnCalibrate.setContentDescription("校准传感器");
-        btnContinuous = makeSmallButton("⏺ 连测", 0xFF8B5CF6);
-        btnContinuous.setContentDescription("连续测量");
-        btnExportCSV = makeSmallButton("📄 导出", C_ORANGE);
-        btnExportCSV.setContentDescription("导出CSV文件");
-        actionRow.addView(btnCapture, lp(0, dp(38), 1));
-        actionRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
-        actionRow.addView(btnCalibrate, lp(0, dp(38), 1));
-        actionRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
-        actionRow.addView(btnContinuous, lp(0, dp(38), 1));
-        actionRow.addView(makeGap(dp(4)), lp(dp(4), 0, 0));
-        actionRow.addView(btnExportCSV, lp(0, dp(38), 1));
-        root.addView(actionRow);
-        root.addView(makeGap(dp(12)));
-
-        // === Continuous Card ===
-        cardContinuous = makeCard();
-        cardContinuous.setPadding(dp(14), dp(12), dp(14), dp(12));
-        cardContinuous.setVisibility(View.GONE);
-        cardContinuous.addView(makeLabel("⏺ 连续测量记录"));
-        tvContinuousInfo = makeBodyText();
-        tvContinuousInfo.setTextSize(10);
-        tvContinuousInfo.setTextColor(C_DIM);
-        cardContinuous.addView(tvContinuousInfo);
-        // 可滚动的测量列表
-        ScrollView continuousScroll = new ScrollView(this);
-        continuousScroll.setPadding(0, dp(4), 0, 0);
-        listContinuous = new LinearLayout(this);
-        listContinuous.setOrientation(LinearLayout.VERTICAL);
-        continuousScroll.addView(listContinuous);
-        cardContinuous.addView(continuousScroll);
-        root.addView(cardContinuous);
-        root.addView(makeGap(dp(12)));
-
-        // === Stats ===
-        LinearLayout statsCard = makeCard();
-        statsCard.setPadding(dp(14), dp(10), dp(14), dp(10));
-        tvStats = makeBodyText();
-        tvStats.setTextSize(11);
-        statsCard.addView(tvStats);
-        root.addView(statsCard);
-        root.addView(makeGap(dp(12)));
-
-        // === Controls ===
-        LinearLayout btnRow = new LinearLayout(this);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setGravity(Gravity.CENTER);
-        btnHold = makeButton("⏸ 暂停", C_WARN);
-        btnHold.setContentDescription("暂停测量");
-        btnReset = makeButton("🔄 重置", C_BLUE);
-        btnReset.setContentDescription("重置所有数据");
-        btnUnit = makeButton("📏 cm", 0xFF8B5CF6);
-        btnUnit.setContentDescription("切换单位");
-        btnRow.addView(btnHold, lp(0, dp(40), 1));
-        btnRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
-        btnRow.addView(btnReset, lp(0, dp(40), 1));
-        btnRow.addView(makeGap(dp(6)), lp(dp(6), 0, 0));
-        btnRow.addView(btnUnit, lp(0, dp(40), 1));
-        root.addView(btnRow);
-        root.addView(makeGap(dp(12)));
-
-        tvHz = makeDimText();
-        tvHz.setTextSize(10);
-        root.addView(tvHz);
-        tvStatus = makeDimText();
-        tvStatus.setTextSize(10);
-        tvStatus.setPadding(0, dp(2), 0, 0);
-        root.addView(tvStatus);
-
-        scrollView.addView(root);
-        setContentView(scrollView);
-
-        btnHold.setOnClickListener(v -> toggleHold());
-        btnReset.setOnClickListener(v -> resetAll());
-        btnUnit.setOnClickListener(v -> cycleUnit());
-        btnCapture.setOnClickListener(v -> captureMeasurement());
-        btnCalibrate.setOnClickListener(v -> startCalibration());
-        btnContinuous.setOnClickListener(v -> toggleContinuousMode());
-        btnExportCSV.setOnClickListener(v -> exportCSV());
-
+        // Init sensors
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         findTofSensor();
-        findAdditionalSensors();
-    }
-
-    private void findTofSensor() {
-        List<Sensor> all = sensorManager.getSensorList(Sensor.TYPE_ALL);
-        tofSensor = null;
-        String name = "未找到";
-
-        // 打印全部传感器信息到调试区（方便定位新的 type 值）
-        StringBuilder allSensorsDump = new StringBuilder();
-        allSensorsDump.append("=== 全部传感器 ===\n");
-        for (Sensor s : all) {
-            allSensorsDump.append(String.format(Locale.getDefault(),
-                    "type=%d name=%s vendor=%s range=%.1f\n",
-                    s.getType(), s.getName(), s.getVendor(), s.getMaximumRange()));
-        }
-
-        // 第一轮：按已知 type 值匹配
-        for (int tofType : KNOWN_TOF_TYPES) {
-            for (Sensor s : all) {
-                if (s.getType() == tofType) {
-                    tofSensor = s;
-                    detectedTofType = tofType;
-                    name = s.getName() + " (type=" + tofType + ")";
-                    break;
-                }
-            }
-            if (tofSensor != null) break;
-        }
-
-        // 第二轮：按名称模糊匹配（兜底，应对 type 值完全变掉的情况）
-        if (tofSensor == null) {
-            for (Sensor s : all) {
-                String n = s.getName().toLowerCase(Locale.ROOT);
-                int type = s.getType();
-                // 跳过标准传感器类型（加速度、陀螺仪等）
-                if (type < 65536) continue;
-                if (n.contains("tof") || n.contains("vl53") || n.contains("d-tof")
-                        || n.contains("dtof") || n.contains("range")) {
-                    tofSensor = s;
-                    detectedTofType = type;
-                    name = s.getName() + " (type=" + type + " 匹配)";
-                    break;
-                }
-            }
-        }
-
-        // 第三轮：列出所有非标准 type（>65536）的传感器供参考
-        if (tofSensor == null) {
-            allSensorsDump.append("\n--- 非标准传感器(type>65536) ---\n");
-            for (Sensor s : all) {
-                if (s.getType() > 65536) {
-                    allSensorsDump.append(String.format(Locale.getDefault(),
-                            "★ type=%d name=%s range=%.1f\n",
-                            s.getType(), s.getName(), s.getMaximumRange()));
-                }
-            }
-        }
-
-        // 最终降级：Proximity
-        if (tofSensor == null) {
-            tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-            if (tofSensor != null) {
-                name = tofSensor.getName() + " (降级Proximity)";
-                isProximityFallback = true;
-            }
-        }
-
-        tvSensorInfo.setText(name);
-        // 将传感器列表写入调试区，方便用户反馈
-        final String dump = allSensorsDump.toString();
-        tvSensorDebug.post(() -> tvSensorDebug.setText(dump));
-    }
-
-    private void findAdditionalSensors() {
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (tofSensor != null)
-            sensorManager.registerListener(this, tofSensor, SensorManager.SENSOR_DELAY_GAME);
-        if (accelerometer != null)
-            sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME);
-        if (gyroscope != null)
-            sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME);
+        registerSensors();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        sensorManager.unregisterListener(this);
+        unregisterSensors();
     }
-
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        int type = event.sensor.getType();
-
-        // Route accelerometer → ShakeDetector + TiltCompensator
-        if (type == Sensor.TYPE_ACCELEROMETER) {
-            shakeDetector.update(event);
-            tiltCompensator.updateAccelerometer(event);
-            if (lastShakeState != shakeDetector.isShaking()) {
-                lastShakeState = shakeDetector.isShaking();
-                runOnUiThread(() -> updateShakeStatus());
-            }
-            return;
-        }
-
-        // Route gyroscope → TiltCompensator
-        if (type == Sensor.TYPE_GYROSCOPE) {
-            tiltCompensator.updateGyroscope(event);
-            return;
-        }
-
-        // Distance sensor — 用 detectedTofType 而非硬编码值
-        boolean isTofEvent = (detectedTofType > 0 && type == detectedTofType)
-                || type == Sensor.TYPE_PROXIMITY;
-        if (!isTofEvent) return;
-        if (isHolding) return;
-        if (shakeDetector.isShaking()) return;
-
-        eventCount++;
-        stats.tickHz();
-
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastUiUpdate < 50) return;
-        lastUiUpdate = now;
-
-        float raw = event.values[0];
-        lastRawSensorValue = raw;
-
-        // ====== Warm-up：跳过前几个不稳定样本 ======
-        if (warmUpCount < WARM_UP_SAMPLES) {
-            warmUpCount++;
-            return;
-        }
-
-        // ====== 溢出/无效值判断 ======
-        // 注意：部分设备 getMaximumRange() 返回值不可靠（如小米17PM返回1mm）
-        // 策略：用传感器已知量程兜底，而非盲目信任 API
-        float overflowThresholdMm;
-        if (tofSensor != null && tofSensor.getMaximumRange() > 100) {
-            // API 返回合理量程（>100mm），直接使用
-            overflowThresholdMm = tofSensor.getMaximumRange();
-        } else {
-            // API 返回不合理值，按传感器类型推测量程
-            if (tofSensor != null) {
-                String sensorName = tofSensor.getName().toLowerCase(Locale.ROOT);
-                if (sensorName.contains("vl53l0")) {
-                    overflowThresholdMm = 1200; // VL53L0X 量程 1.2m
-                } else if (sensorName.contains("vl53l1") || sensorName.contains("vl53lx")) {
-                    overflowThresholdMm = 4000; // VL53L1X 量程 4m
-                } else {
-                    overflowThresholdMm = 4000; // 其他 ToF 默认 4m
-                }
-            } else {
-                overflowThresholdMm = 4000;
-            }
-        }
-
-        // 换算: 传感器原始值 × unitScale = mm
-        float mm = raw * unitScale;
-
-        // 判断是否溢出（超过传感器量程）
-        if (mm >= overflowThresholdMm) {
-            if (lastFilteredMm > 0) {
-                updateDisplay(raw, lastFilteredMm, false);
-            } else {
-                updateDisplay(raw, -1, true);
-            }
-            return;
-        }
-
-        // 丢弃负值和零
-        if (mm <= 0) {
-            return;
-        }
-
-        // 校准采集中
-        if (isCollectingCal) {
-            calRawSum += raw;
-            calRawCount++;
-            return;
-        }
-
-        // 滤波
-        float filtered = primaryFilter.filter(mm);
-
-        if (isLocked) {
-            filtered = lockedDistanceMm;
-        }
-
-        if (filtered > 0 && !isLocked) {
-            stats.add(filtered);
-            checkContinuous(filtered);
-        }
-
-        lastFilteredMm = filtered;
-        updateDisplay(raw, filtered, false);
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-
-    private void updateShakeStatus() {
-        if (shakeDetector.isShaking()) {
-            tvStatus.setText("📵 检测到抖动，暂停更新");
-            tvStatus.setTextColor(C_WARN);
-        } else {
-            tvStatus.setTextColor(C_DIM);
-        }
-    }
-
-    private void checkContinuous(float filtered) {
-        if (!continuousMode) return;
-        if (lastStableValue < 0) {
-            lastStableValue = filtered;
-            lastStableTime = System.currentTimeMillis();
-            return;
-        }
-        if (Math.abs(filtered - lastStableValue) < STABLE_RANGE_MM) {
-            if (System.currentTimeMillis() - lastStableTime > STABLE_THRESHOLD_MS) {
-                if (continuousRecords.isEmpty() ||
-                        Math.abs(continuousRecords.get(continuousRecords.size() - 1).distanceMm - filtered) > 20) {
-                    long now = System.currentTimeMillis();
-                    continuousRecords.add(new MeasurementRecord(filtered, now));
-                    vibrate(50);
-
-                    String u = UNIT_LABELS[currentUnit];
-                    String valStr = fmt(convertUnit(filtered, currentUnit), currentUnit);
-                    String timeStr = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(now));
-
-                    tvContinuousInfo.post(() -> {
-                        tvContinuousInfo.setText(String.format(Locale.getDefault(),
-                                "已记录 %d 个点", continuousRecords.size()));
-                        // 在列表顶部插入新条目（最新的在上面）
-                        TextView entry = new TextView(this);
-                        entry.setText(String.format(Locale.getDefault(),
-                                "#%d  %s  %s %s",
-                                continuousRecords.size(), timeStr, valStr, u));
-                        entry.setTextSize(11);
-                        entry.setTextColor(C_TEXT);
-                        entry.setTypeface(Typeface.MONOSPACE);
-                        entry.setPadding(0, dp(3), 0, dp(3));
-                        listContinuous.addView(entry, 0);
-                    });
-                }
-                lastStableValue = filtered;
-                lastStableTime = System.currentTimeMillis();
-            }
-        } else {
-            lastStableValue = filtered;
-            lastStableTime = System.currentTimeMillis();
-        }
-    }
-
-    private void updateDisplay(float rawSensorValue, float filteredMm, boolean noSignal) {
-        if (noSignal || filteredMm <= 0) {
-            tvDistance.setText("--");
-            tvDistance.setTextColor(C_ERR);
-            tvRawInfo.setText(noSignal ? "无信号" : "等待数据");
-            tvHoldLabel.setText(noSignal ? "⚠ 无信号" : "● 测量中");
-            tvHoldLabel.setTextColor(noSignal ? C_ERR : C_ACCENT);
-            tvQuality.setText("");
-            tvConfidenceBar.setText("");
-            tvHorizontalInfo.setVisibility(View.GONE);
-            updateDebug(rawSensorValue);
-            return;
-        }
-
-        tvDistance.setTextColor(isLocked ? C_BLUE : C_ACCENT);
-        tvHoldLabel.setTextColor(isHolding ? C_WARN : C_ACCENT);
-
-        String state = "● 测量中";
-        if (isLocked) state = "🔒 已锁定";
-        else if (isHolding) state = "● 已暂停";
-        else if (isCollectingCal) state = "🎯 校准采集中...";
-        tvHoldLabel.setText(state);
-
-        float rounded = Math.round(filteredMm);
-        float displayVal = convertUnit(rounded, currentUnit);
-        tvDistance.setText(fmt(displayVal, currentUnit));
-        tvUnit.setText(" " + UNIT_LABELS[currentUnit]);
-
-        // 显示原始值和换算后的值
-        tvRawInfo.setText(String.format(Locale.getDefault(),
-                "传感器: %.1f × %.2f = %.0f mm", rawSensorValue, unitScale, filteredMm));
-
-        // 倾斜补偿：仅对 ToF 传感器有效（Proximity 降级模式下不显示）
-        if (!isProximityFallback && tiltCompensator != null) {
-            float pitchDeg = Math.abs(tiltCompensator.getPitchDegrees());
-            if (pitchDeg > 10) {
-                float hDist = tiltCompensator.getHorizontalDistance(filteredMm);
-                float hDisplay = convertUnit(hDist, currentUnit);
-                tvHorizontalInfo.setText(String.format(Locale.getDefault(),
-                        "📐 %s · 水平: %s %s",
-                        tiltCompensator.getTiltQuality(),
-                        fmt(hDisplay, currentUnit),
-                        UNIT_LABELS[currentUnit]));
-                tvHorizontalInfo.setVisibility(View.VISIBLE);
-            } else {
-                tvHorizontalInfo.setVisibility(View.GONE);
-            }
-        }
-
-        // Quality
-        float stdDev = stats.getStdDev();
-        String qLabel;
-        int qColor;
-        if (stdDev < 5) { qLabel = "🟢 高精度"; qColor = C_GOOD; }
-        else if (stdDev < 15) { qLabel = "🟡 良好"; qColor = C_FAIR; }
-        else { qLabel = "🔴 波动"; qColor = C_POOR; }
-        tvQuality.setText(qLabel);
-        tvQuality.setTextColor(qColor);
-
-        int barLen = Math.max(0, Math.min(20, (int) (20 - stdDev * 0.4f)));
-        StringBuilder bar = new StringBuilder("[");
-        for (int i = 0; i < 20; i++) bar.append(i < barLen ? "█" : "░");
-        bar.append("]");
-        tvConfidenceBar.setText(bar.toString());
-        tvConfidenceBar.setTextColor(qColor);
-
-        tvLockedInfo.setVisibility(isLocked ? View.VISIBLE : View.GONE);
-        if (isLocked) tvLockedInfo.setText("📸 点「解锁」恢复");
-
-        if (stats.getSampleCount() > 0) {
-            String u = UNIT_LABELS[currentUnit];
-            tvStats.setText(String.format(Locale.getDefault(),
-                    "范围: %s ~ %s  均值: %s  σ: %s",
-                    fmt(convertUnit(stats.getMin(), currentUnit), currentUnit),
-                    fmt(convertUnit(stats.getMax(), currentUnit), currentUnit),
-                    fmt(convertUnit(stats.getAvg(), currentUnit), currentUnit),
-                    fmtDec(stdDev, 1)));
-        } else {
-            tvStats.setText("等待数据...");
-        }
-
-        updateDebug(rawSensorValue);
-
-        tvHz.setText(String.format(Locale.getDefault(),
-                "%d Hz · %d samples", stats.getActualHz(), eventCount));
-
-        if (isProximityFallback) {
-            tvStatus.setText("⚠ 降级 Proximity");
-            tvStatus.setTextColor(C_WARN);
-        } else if (!shakeDetector.isShaking()) {
-            tvStatus.setTextColor(C_DIM);
-        }
-    }
-
-    private void updateDebug(float rawSensorValue) {
-        float apiRange = tofSensor != null ? tofSensor.getMaximumRange() : 0;
-        float apiRes = tofSensor != null ? tofSensor.getResolution() : 0;
-
-        tvSensorDebug.setText(String.format(Locale.getDefault(),
-                "传感器: %s (type=%d)\n" +
-                "API量程: %.0f mm  API分辨率: %.4f\n" +
-                "换算系数: %.4f %s\n" +
-                "最近原始值: %.2f",
-                tofSensor != null ? tofSensor.getName() : "null",
-                detectedTofType,
-                apiRange, apiRes,
-                unitScale, isCalibrated ? "(已校准)" : "(固定×1)",
-                rawSensorValue));
-    }
-
-    // ========== 校准 ==========
-
-    private void startCalibration() {
-        if (isCollectingCal) {
-            finishCalibration();
-            return;
-        }
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("🎯 校准单位换算");
-
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(16), dp(20), dp(8));
-
-        TextView desc = new TextView(this);
-        desc.setText("1. 将手机对准一个已知距离的目标（如尺子）\n2. 保持不动\n3. 在下方输入真实距离（cm）\n4. 点「开始采集」后保持 2 秒");
-        desc.setTextSize(12);
-        desc.setTextColor(C_TEXT);
-        layout.addView(desc);
-
-        EditText input = new EditText(this);
-        input.setHint("例如: 100");
-        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        input.setTextColor(C_TEXT);
-        input.setHintTextColor(C_DIM);
-        layout.addView(input);
-
-        builder.setView(layout);
-
-        builder.setPositiveButton("开始采集", (dialog, which) -> {
-            String text = input.getText().toString().trim();
-            if (text.isEmpty()) return;
-            try {
-                float knownCm = Float.parseFloat(text);
-                float knownMm = knownCm * 10f;
-
-                calRawSum = 0;
-                calRawCount = 0;
-                isCollectingCal = true;
-
-                ((TextView) btnCalibrate).setText("⏳ 采集中");
-                setBackgroundTint(btnCalibrate, C_WARN);
-
-                tvHoldLabel.postDelayed(() -> {
-                    if (isCollectingCal) {
-                        finishCalibrationWith(knownMm);
-                    }
-                }, 2000);
-
-            } catch (NumberFormatException ignored) {}
-        });
-
-        builder.setNegativeButton("取消", null);
-        builder.show();
-    }
-
-    private void finishCalibration() {
-        if (calRawCount > 0 && lastFilteredMm > 0) {
-            finishCalibrationWith(lastFilteredMm);
-        }
-    }
-
-    private void finishCalibrationWith(float knownMm) {
-        isCollectingCal = false;
-
-        if (calRawCount < 5) {
-            ((TextView) btnCalibrate).setText("🎯 校准");
-            setBackgroundTint(btnCalibrate, C_GREEN);
-            return;
-        }
-
-        float avgRaw = calRawSum / calRawCount;
-
-        if (avgRaw > 0) {
-            unitScale = knownMm / avgRaw;
-            isCalibrated = true;
-        }
-
-        primaryFilter.reset();
-        stats.reset();
-        warmUpCount = 0;
-        eventCount = 0;
-
-        calRawSum = 0;
-        calRawCount = 0;
-
-        ((TextView) btnCalibrate).setText("✅ 已校准");
-        setBackgroundTint(btnCalibrate, C_GOOD);
-        vibrate(100);
-
-        btnCalibrate.postDelayed(() -> {
-            ((TextView) btnCalibrate).setText("🎯 校准");
-            setBackgroundTint(btnCalibrate, C_GREEN);
-        }, 2000);
-    }
-
-    // ========== Actions ==========
-
-    private void toggleHold() {
-        isHolding = !isHolding;
-        TextView tv = (TextView) btnHold;
-        if (isHolding) {
-            tv.setText("▶ 继续");
-            tv.setTextColor(C_ACCENT);
-            setBackgroundTint(btnHold, C_ACCENT);
-        } else {
-            tv.setText("⏸ 暂停");
-            tv.setTextColor(C_WARN);
-            setBackgroundTint(btnHold, C_WARN);
-        }
-    }
-
-    private void resetAll() {
-        stats.reset();
-        primaryFilter.reset();
-        shakeDetector.reset();
-        tiltCompensator.reset();
-        eventCount = 0;
-        lastFilteredMm = -1;
-        lastRawSensorValue = -1;
-        isLocked = false;
-        lockedDistanceMm = -1;
-        continuousMode = false;
-        continuousRecords.clear();
-        listContinuous.removeAllViews();
-        lastStableValue = -1;
-        warmUpCount = 0;
-        isCollectingCal = false;
-        calRawSum = 0;
-        calRawCount = 0;
-        unitScale = 1f;
-        isCalibrated = false;
-        lastShakeState = false;
-        cardContinuous.setVisibility(View.GONE);
-        ((TextView) btnCalibrate).setText("🎯 校准");
-        setBackgroundTint(btnCalibrate, C_GREEN);
-        updateDisplay(0, -1, false);
-    }
-
-    private void cycleUnit() {
-        currentUnit = (currentUnit + 1) % 4;
-        ((TextView) btnUnit).setText("📏 " + UNIT_LABELS[currentUnit]);
-    }
-
-    private void captureMeasurement() {
-        if (isLocked) {
-            isLocked = false;
-            lockedDistanceMm = -1;
-            ((TextView) btnCapture).setText("📸 锁定");
-            tvLockedInfo.setVisibility(View.GONE);
-            return;
-        }
-        lockedDistanceMm = lastFilteredMm;
-        if (lockedDistanceMm < 0) return;
-        isLocked = true;
-        ((TextView) btnCapture).setText("🔓 解锁");
-        tvLockedInfo.setVisibility(View.VISIBLE);
-        vibrate(100);
-
-        View rootView = getWindow().getDecorView().getRootView();
-        rootView.post(() -> {
-            try {
-                Bitmap bitmap = Bitmap.createBitmap(rootView.getWidth(), rootView.getHeight(), Bitmap.Config.ARGB_8888);
-                Canvas canvas = new Canvas(bitmap);
-                rootView.draw(canvas);
-                String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-                String u = UNIT_LABELS[currentUnit];
-                String fn = String.format("tof_%s_%s_%s.png",
-                        fmt(convertUnit(lockedDistanceMm, currentUnit), currentUnit), u, ts);
-                File dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-                if (dir == null) dir = getFilesDir();
-                FileOutputStream fos = new FileOutputStream(new File(dir, fn));
-                // API 31+ 使用 Bitmap.CompressFormat.PNG (非废弃版本)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
-                } else {
-                    @SuppressWarnings("deprecation")
-                    Bitmap.CompressFormat fmt = Bitmap.CompressFormat.PNG;
-                    bitmap.compress(fmt, 100, fos);
-                }
-                fos.close();
-            } catch (Exception ignored) {}
-        });
-    }
-
-    private void toggleContinuousMode() {
-        continuousMode = !continuousMode;
-        if (continuousMode) {
-            continuousRecords.clear();
-            listContinuous.removeAllViews();
-            lastStableValue = -1;
-            cardContinuous.setVisibility(View.VISIBLE);
-            ((TextView) btnContinuous).setText("⏹ 停止");
-            setBackgroundTint(btnContinuous, C_ERR);
-        } else {
-            cardContinuous.setVisibility(View.GONE);
-            ((TextView) btnContinuous).setText("⏺ 连测");
-            setBackgroundTint(btnContinuous, C_GREEN);
-        }
-    }
-
-    private static final int REQUEST_CREATE_CSV = 1001;
-
-    private void exportCSV() {
-        if (stats.getSampleCount() == 0) return;
-
-        String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-        String fileName = "tof_data_" + ts + ".csv";
-
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/csv");
-        intent.putExtra(Intent.EXTRA_TITLE, fileName);
-
-        try {
-            startActivityForResult(intent, REQUEST_CREATE_CSV);
-        } catch (ActivityNotFoundException e) {
-            // 无文件管理器可用，fallback 到 app 私有目录
-            exportCSVToAppDir();
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CREATE_CSV && resultCode == RESULT_OK && data != null) {
-            Uri uri = data.getData();
-            if (uri != null) writeCSVToUri(uri);
-        }
-    }
-
-    private void writeCSVToUri(Uri uri) {
-        try {
-            OutputStream os = getContentResolver().openOutputStream(uri);
-            if (os == null) return;
-            BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(os));
-            bw.write("timestamp,distance_mm\n");
-            if (!continuousRecords.isEmpty()) {
-                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-                for (MeasurementRecord rec : continuousRecords) {
-                    bw.write(String.format(Locale.getDefault(), "%s,%.1f\n",
-                            sdf.format(new Date(rec.timestamp)), rec.distanceMm));
-                }
-            }
-            bw.close();
-            vibrate(100);
-        } catch (IOException ignored) {}
-    }
-
-    private void exportCSVToAppDir() {
-        try {
-            String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-            File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
-            if (dir == null) dir = getFilesDir();
-            FileWriter fw = new FileWriter(new File(dir, "tof_data_" + ts + ".csv"));
-            fw.write("timestamp,distance_mm\n");
-            if (!continuousRecords.isEmpty()) {
-                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-                for (MeasurementRecord rec : continuousRecords) {
-                    fw.write(String.format(Locale.getDefault(), "%s,%.1f\n",
-                            sdf.format(new Date(rec.timestamp)), rec.distanceMm));
-                }
-            }
-            fw.close();
-            vibrate(100);
-        } catch (IOException ignored) {}
-    }
-
-    private void vibrate(long ms) {
-        if (vibrator == null || !vibrator.hasVibrator()) return;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
-        } else {
-            @SuppressWarnings("deprecation")
-            Vibrator v = vibrator;
-            v.vibrate(ms);
-        }
-    }
-
-    // ========== 音量键锁定 ==========
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            captureMeasurement();
-            return true; // 消费事件，阻止系统音量调节
+            isLocked = !isLocked;
+            updateLockButton();
+            vibrate(50);
+            return true;
         }
         return super.onKeyDown(keyCode, event);
     }
 
-    // ========== Helpers ==========
+    // ─────────────────────────────────────────────
+    //  UI Building
+    // ─────────────────────────────────────────────
 
-    private String fmt(float val, int unit) {
-        switch (unit) {
-            case UNIT_MM: return String.format(Locale.getDefault(), "%.0f", val);
-            case UNIT_CM: return String.format(Locale.getDefault(), "%.1f", val);
-            case UNIT_M: return String.format(Locale.getDefault(), "%.3f", val);
-            case UNIT_INCH: return String.format(Locale.getDefault(), "%.2f", val);
-            default: return String.format(Locale.getDefault(), "%.1f", val);
+    private int dp(float v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void buildUI() {
+        rootLayout = new FrameLayout(this);
+        rootLayout.setBackgroundColor(C_BG);
+
+        // ScrollView + content
+        scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        contentLayout = new LinearLayout(this);
+        contentLayout.setOrientation(LinearLayout.VERTICAL);
+        contentLayout.setGravity(Gravity.CENTER_HORIZONTAL);
+        contentLayout.setPadding(dp(20), dp(48), dp(20), dp(120));
+
+        buildDistanceCard();
+        buildStatusSection();
+        buildDebugSection();
+
+        scrollView.addView(contentLayout, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Bottom bar
+        buildBottomBar();
+        buildMorePanel();
+
+        // Compose: ScrollView + bottom bar overlay
+        rootLayout.addView(scrollView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // More panel (initially hidden)
+        rootLayout.addView(morePanel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM));
+
+        // Bottom bar sits above more panel
+        rootLayout.addView(bottomBar, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM));
+    }
+
+    private void buildDistanceCard() {
+        distanceCard = new GlassCard(this);
+        distanceCard.setAccentTint(C_ACCENT);
+
+        LinearLayout cardInner = new LinearLayout(this);
+        cardInner.setOrientation(LinearLayout.VERTICAL);
+        cardInner.setGravity(Gravity.CENTER);
+        cardInner.setPadding(dp(24), dp(32), dp(24), dp(24));
+
+        // Main distance value
+        valueText = new TextView(this);
+        valueText.setText("—");
+        valueText.setTextColor(C_TEXT);
+        valueText.setTextSize(64);
+        valueText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        valueText.setGravity(Gravity.CENTER);
+        cardInner.addView(valueText);
+
+        // Unit label
+        unitText = new TextView(this);
+        unitText.setText("mm");
+        unitText.setTextColor(C_ACCENT);
+        unitText.setTextSize(20);
+        unitText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        unitText.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams unitLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        unitLp.topMargin = dp(4);
+        cardInner.addView(unitText, unitLp);
+
+        // Quality bar
+        qualityBar = new QualityBarView(this);
+        LinearLayout.LayoutParams qbLp = new LinearLayout.LayoutParams(dp(200), dp(6));
+        qbLp.topMargin = dp(16);
+        cardInner.addView(qualityBar, qbLp);
+
+        // Tilt info
+        statusText = new TextView(this);
+        statusText.setText("寻找传感器…");
+        statusText.setTextColor(C_TEXT_DIM);
+        statusText.setTextSize(13);
+        statusText.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = dp(12);
+        cardInner.addView(statusText, slp);
+
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cardLp.setMargins(0, 0, 0, dp(24));
+        distanceCard.addView(cardInner, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        contentLayout.addView(distanceCard, cardLp);
+    }
+
+    private void buildStatusSection() {
+        // Stats summary row
+        LinearLayout statsRow = new LinearLayout(this);
+        statsRow.setOrientation(LinearLayout.HORIZONTAL);
+        statsRow.setGravity(Gravity.CENTER);
+        statsRow.setPadding(0, dp(8), 0, dp(8));
+
+        String[] labels = {"min", "max", "avg", "σ"};
+        for (int i = 0; i < labels.length; i++) {
+            if (i > 0) {
+                TextView sep = new TextView(this);
+                sep.setText("  ·  ");
+                sep.setTextColor(0x33FFFFFF);
+                sep.setTextSize(12);
+                statsRow.addView(sep);
+            }
+            TextView tv = new TextView(this);
+            tv.setText(labels[i] + ": —");
+            tv.setTextColor(C_TEXT_DIM);
+            tv.setTextSize(12);
+            tv.setTag("stat_" + labels[i]);
+            statsRow.addView(tv);
         }
+        contentLayout.addView(statsRow);
     }
 
-    private String fmtDec(float val, int decimals) {
-        return String.format(Locale.getDefault(), "%." + decimals + "f", val);
+    private void buildDebugSection() {
+        debugText = new TextView(this);
+        debugText.setTextColor(0x66FFFFFF);
+        debugText.setTextSize(11);
+        debugText.setVisibility(View.GONE);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.topMargin = dp(12);
+        contentLayout.addView(debugText, dlp);
     }
 
-    private float convertUnit(float mm, int unit) {
-        switch (unit) {
-            case UNIT_MM: return mm;
-            case UNIT_CM: return mm / 10f;
-            case UNIT_M: return mm / 1000f;
-            case UNIT_INCH: return mm / 25.4f;
-            default: return mm / 10f;
-        }
-    }
+    private void buildBottomBar() {
+        bottomBar = new LinearLayout(this);
+        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
+        bottomBar.setGravity(Gravity.CENTER);
+        bottomBar.setBackgroundColor(0xCC000000); // semi-transparent black
+        bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
 
-    // ========== UI ==========
+        int btnSize = dp(52);
+        int smallBtnSize = dp(40);
 
-    private LinearLayout makeCard() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(C_CARD);
-        bg.setCornerRadius(dp(12));
-        bg.setStroke(1, C_CARD_BORDER);
-        card.setBackground(bg);
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        return card;
-    }
-
-    private View makeGap(int height) {
-        View gap = new View(this);
-        gap.setLayoutParams(new LinearLayout.LayoutParams(0, height));
-        return gap;
-    }
-
-    private LinearLayout.LayoutParams lp(int w, int h, float weight) {
-        return new LinearLayout.LayoutParams(w, h, weight);
-    }
-
-    private TextView makeLabel(String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(12);
-        tv.setTextColor(C_TEXT);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
-        return tv;
-    }
-
-    private TextView makeBodyText() {
-        TextView tv = new TextView(this);
-        tv.setTextSize(12);
-        tv.setTextColor(C_TEXT);
-        tv.setLineSpacing(dp(2), 1);
-        tv.setPadding(0, dp(4), 0, 0);
-        return tv;
-    }
-
-    private TextView makeDimText() {
-        TextView tv = makeBodyText();
-        tv.setTextSize(10);
-        tv.setTextColor(C_DIM);
-        return tv;
-    }
-
-    private TextView makeButton(String text, int color) {
-        TextView btn = new TextView(this);
-        btn.setText(text);
-        btn.setTextSize(12);
-        btn.setTextColor(Color.WHITE);
-        btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dp(10), dp(8), dp(10), dp(8));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(color);
-        bg.setCornerRadius(dp(8));
-        btn.setBackground(bg);
-        btn.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.7f);
-            else if (event.getAction() == MotionEvent.ACTION_UP
-                    || event.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
-            return false;
+        lockBtn = makeRoundButton("🔒", C_ACCENT);
+        lockBtn.setOnPress(() -> {
+            isLocked = !isLocked;
+            updateLockButton();
+            vibrate(30);
         });
+
+        pauseBtn = makeRoundButton("⏸", C_ACCENT2);
+        pauseBtn.setOnPress(() -> {
+            isPaused = !isPaused;
+            updatePauseButton();
+            vibrate(30);
+        });
+
+        unitBtn = makeRoundButton("mm", C_ACCENT3);
+        unitBtn.setOnPress(() -> {
+            isMm = !isMm;
+            updateUnitDisplay();
+            vibrate(30);
+        });
+
+        resetBtn = makeRoundButton("↺", 0xFFFF453A);
+        resetBtn.setOnPress(() -> {
+            resetMeasurement();
+            vibrate(50);
+        });
+
+        moreBtn = makeRoundButton("⋯", C_TEXT_DIM);
+        moreBtn.setRound(true);
+        moreBtn.setOnPress(() -> {
+            moreExpanded = !moreExpanded;
+            updateMorePanel();
+            vibrate(30);
+        });
+
+        LinearLayout.LayoutParams roundLp = new LinearLayout.LayoutParams(btnSize, btnSize);
+        roundLp.setMargins(dp(8), 0, dp(8), 0);
+        LinearLayout.LayoutParams smallLp = new LinearLayout.LayoutParams(smallBtnSize, smallBtnSize);
+        smallLp.setMargins(dp(8), 0, dp(8), 0);
+
+        bottomBar.addView(lockBtn, roundLp);
+        bottomBar.addView(pauseBtn, roundLp);
+        bottomBar.addView(unitBtn, roundLp);
+        bottomBar.addView(resetBtn, roundLp);
+        bottomBar.addView(moreBtn, smallLp);
+    }
+
+    private GlassButton makeRoundButton(String label, int accent) {
+        GlassButton btn = new GlassButton(this);
+        btn.setLabel(label);
+        btn.setAccentColor(accent);
+        btn.setRound(true);
         return btn;
     }
 
-    private TextView makeSmallButton(String text, int color) {
-        TextView btn = new TextView(this);
-        btn.setText(text);
-        btn.setTextSize(10);
-        btn.setTextColor(Color.WHITE);
-        btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dp(6), dp(6), dp(6), dp(6));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(color);
-        bg.setCornerRadius(dp(6));
-        btn.setBackground(bg);
-        btn.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) v.setAlpha(0.7f);
-            else if (event.getAction() == MotionEvent.ACTION_UP
-                    || event.getAction() == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
-            return false;
+    private void buildMorePanel() {
+        morePanel = new LinearLayout(this);
+        morePanel.setOrientation(LinearLayout.VERTICAL);
+        morePanel.setBackgroundColor(0xEE111111);
+        morePanel.setPadding(dp(16), dp(12), dp(16), dp(12));
+        morePanel.setVisibility(View.GONE);
+
+        // Add bottom bar height offset
+        FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) morePanel.getLayoutParams();
+        if (mlp == null) {
+            mlp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM);
+        }
+        mlp.bottomMargin = dp(72); // above bottom bar
+
+        int rowHeight = dp(44);
+
+        debugBtn = makeFlatButton("调试信息", C_ACCENT);
+        debugBtn.setOnPress(() -> {
+            debugVisible = !debugVisible;
+            debugText.setVisibility(debugVisible ? View.VISIBLE : View.GONE);
+            debugBtn.setLabel(debugVisible ? "调试信息 ✓" : "调试信息");
+            vibrate(30);
         });
+
+        calibrateBtn = makeFlatButton("校准倾斜", C_ACCENT2);
+        calibrateBtn.setOnPress(() -> {
+            tiltCompensator.calibrate();
+            vibrate(80);
+            statusText.setText("已校准 ✓");
+        });
+
+        csvBtn = makeFlatButton("导出 CSV", C_ACCENT3);
+        csvBtn.setOnPress(() -> {
+            if (csvData.isEmpty()) {
+                statusText.setText("无数据可导出");
+            } else {
+                exportCsv();
+            }
+            vibrate(50);
+        });
+
+        continuousBtn = makeFlatButton("连续测量", 0xFFFF375F);
+        continuousBtn.setOnPress(() -> {
+            continuousMode = !continuousMode;
+            continuousBtn.setLabel(continuousMode ? "连续测量 ✓" : "连续测量");
+            if (continuousMode) isRecording = true;
+            vibrate(30);
+        });
+
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, rowHeight);
+        rowLp.setMargins(0, dp(4), 0, dp(4));
+        morePanel.addView(debugBtn, rowLp);
+        morePanel.addView(calibrateBtn, rowLp);
+        morePanel.addView(csvBtn, rowLp);
+        morePanel.addView(continuousBtn, rowLp);
+    }
+
+    private GlassButton makeFlatButton(String label, int accent) {
+        GlassButton btn = new GlassButton(this);
+        btn.setLabel(label);
+        btn.setAccentColor(accent);
+        btn.setRound(false);
         return btn;
     }
 
-    private void setBackgroundTint(View view, int color) {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(color);
-        bg.setCornerRadius(dp(8));
-        view.setBackground(bg);
+    // ─────────────────────────────────────────────
+    //  UI Updates
+    // ─────────────────────────────────────────────
+
+    private void updateLockButton() {
+        lockBtn.setLabel(isLocked ? "🔓" : "🔒");
+        lockBtn.setAccentColor(isLocked ? 0xFFFF453A : C_ACCENT);
+        distanceCard.setAccentTint(isLocked ? 0xFFFF453A : C_ACCENT);
     }
 
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density);
+    private void updatePauseButton() {
+        pauseBtn.setLabel(isPaused ? "▶" : "⏸");
+        pauseBtn.setAccentColor(isPaused ? C_ACCENT2 : C_ACCENT2);
     }
 
-    static class MeasurementRecord {
-        final float distanceMm;
-        final long timestamp;
-        MeasurementRecord(float distanceMm, long timestamp) {
-            this.distanceMm = distanceMm;
-            this.timestamp = timestamp;
+    private void updateUnitDisplay() {
+        unitBtn.setLabel(isMm ? "mm" : "in");
+    }
+
+    private void updateMorePanel() {
+        morePanel.setVisibility(moreExpanded ? View.VISIBLE : View.GONE);
+        if (moreExpanded) {
+            morePanel.animate().translationY(0).setDuration(250).start();
         }
+    }
+
+    private void updateDisplay(float distMm) {
+        if (isLocked) return;
+
+        float displayDist = distMm;
+        String unit = "mm";
+
+        if (!isMm) {
+            displayDist = distMm / 25.4f;
+            unit = "in";
+        }
+
+        // Format value
+        String valueStr;
+        if (displayDist < 0) {
+            valueStr = "—";
+        } else if (displayDist >= 1000 || (!isMm && displayDist >= 39.37f)) {
+            valueStr = String.format(Locale.US, "%.2f", displayDist);
+        } else {
+            valueStr = String.format(Locale.US, "%.1f", displayDist);
+        }
+
+        valueText.setText(valueStr);
+        unitText.setText(unit);
+
+        // Quality bar based on stddev
+        float stddev = stats.getStdDev();
+        float quality;
+        if (stddev < 1) quality = 1f;
+        else if (stddev < 5) quality = 0.8f;
+        else if (stddev < 15) quality = 0.5f;
+        else quality = 0.2f;
+        qualityBar.setProgress(quality);
+
+        int qColor = quality > 0.7f ? C_ACCENT2 : (quality > 0.4f ? C_ACCENT3 : 0xFFFF453A);
+        qualityBar.setFillColor(qColor);
+
+        // Stats row
+        updateStatsRow();
+
+        // Status line
+        String tiltInfo = tiltCompensator.getTiltQuality();
+        String shakeInfo = shakeDetector.isShaking() ? " | 手抖" : "";
+        String lockInfo = isLocked ? " | 🔒" : "";
+        statusText.setText(tiltInfo + shakeInfo + lockInfo);
+
+        // Debug info
+        if (debugVisible) {
+            String dbg = String.format(Locale.US,
+                    "原始: %.1f mm\n滤波: %.1f mm\n倾斜: %.1f°\n水平: %.1f mm\n" +
+                    "采样: %d | Hz: %d\n偏移: %.2f mm",
+                    currentDistance, filteredDistance,
+                    tiltCompensator.getPitchDegrees(),
+                    tiltCompensator.getHorizontalDistance(filteredDistance),
+                    stats.getSampleCount(), stats.getActualHz(),
+                    stats.getStdDev());
+            debugText.setText(dbg);
+        }
+    }
+
+    private void updateStatsRow() {
+        for (int i = 0; i < contentLayout.getChildCount(); i++) {
+            View child = contentLayout.getChildAt(i);
+            if (child instanceof LinearLayout) {
+                LinearLayout row = (LinearLayout) child;
+                for (int j = 0; j < row.getChildCount(); j++) {
+                    View v = row.getChildAt(j);
+                    if (v instanceof TextView && v.getTag() != null) {
+                        String tag = (String) v.getTag();
+                        float val;
+                        if (tag.equals("stat_min")) val = stats.getMin();
+                        else if (tag.equals("stat_max")) val = stats.getMax();
+                        else if (tag.equals("stat_avg")) val = stats.getAvg();
+                        else if (tag.equals("stat_σ")) val = stats.getStdDev();
+                        else continue;
+
+                        String label = tag.replace("stat_", "");
+                        if (val > 0 && !isMm) val /= 25.4f;
+                        ((TextView) v).setText(String.format(Locale.US, "%s: %.1f", label, val));
+                    }
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    //  Sensor Logic
+    // ─────────────────────────────────────────────
+
+    private void findTofSensor() {
+        if (sensorManager == null) return;
+
+        // Try dToF sensor types
+        tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
+
+        if (tofSensor == null) {
+            statusText.setText("未找到距离传感器");
+            return;
+        }
+
+        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+    }
+
+    private void registerSensors() {
+        if (sensorManager == null || sensorRegistered) return;
+
+        if (tofSensor != null) {
+            sensorManager.registerListener(this, tofSensor, SensorManager.SENSOR_DELAY_FASTEST);
+        }
+        if (accelSensor != null) {
+            sensorManager.registerListener(this, accelSensor, SensorManager.SENSOR_DELAY_GAME);
+        }
+        if (gyroSensor != null) {
+            sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME);
+        }
+        sensorRegistered = true;
+    }
+
+    private void unregisterSensors() {
+        if (sensorManager != null && sensorRegistered) {
+            sensorManager.unregisterListener(this);
+            sensorRegistered = false;
+        }
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        if (event.sensor.getType() == Sensor.TYPE_PROXIMITY) {
+            handleTofReading(event.values[0]);
+        } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+            boolean wasShaking = shakeDetector.isShaking();
+            shakeDetector.update(event);
+            tiltCompensator.updateAccelerometer(event);
+
+            // Auto-unfreeze when shake stops
+            if (wasShaking && !shakeDetector.isShaking() && isLocked) {
+                isLocked = false;
+                updateLockButton();
+            }
+        } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            tiltCompensator.updateGyroscope(event);
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        // no-op
+    }
+
+    private void handleTofReading(float rawMm) {
+        currentDistance = rawMm;
+        stats.tickHz();
+
+        if (isPaused) return;
+
+        // Apply filter
+        filteredDistance = filter.filter(rawMm);
+        if (filteredDistance < 0) return;
+
+        stats.add(filteredDistance);
+
+        // Update display
+        updateDisplay(filteredDistance);
+
+        // Continuous CSV recording
+        if (continuousMode && isRecording) {
+            long now = System.currentTimeMillis();
+            if (now - lastContinuousCsv >= CONTINUOUS_CSV_INTERVAL_MS) {
+                csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                lastContinuousCsv = now;
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    //  Actions
+    // ─────────────────────────────────────────────
+
+    private void resetMeasurement() {
+        filter.reset();
+        stats.reset();
+        tiltCompensator.resetCalibration();
+        shakeDetector.reset();
+        csvData.clear();
+        isRecording = false;
+        continuousMode = false;
+        continuousBtn.setLabel("连续测量");
+        currentDistance = -1;
+        filteredDistance = -1;
+        valueText.setText("—");
+        qualityBar.setProgress(0);
+        statusText.setText("已重置");
+        debugText.setText("");
+    }
+
+    private void exportCsv() {
+        if (csvData.isEmpty()) {
+            statusText.setText("无数据");
+            return;
+        }
+
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+            String filename = "tof_" + sdf.format(new Date()) + ".csv";
+            File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+            if (dir == null) dir = getFilesDir();
+            File file = new File(dir, filename);
+
+            BufferedWriter writer = new BufferedWriter(new FileWriter(file));
+            writer.write("timestamp_ms,distance_mm,tilt_deg");
+            writer.newLine();
+
+            long baseTime = System.currentTimeMillis();
+            for (int i = 0; i < csvData.size(); i++) {
+                float[] row = csvData.get(i);
+                writer.write(String.format(Locale.US, "%d,%.1f,%.1f",
+                        baseTime + i * CONTINUOUS_CSV_INTERVAL_MS, row[0], row[1]));
+                writer.newLine();
+            }
+            writer.close();
+
+            statusText.setText("已导出: " + filename);
+            vibrate(80);
+
+            // Try to share
+            Intent shareIntent = new Intent(Intent.ACTION_SEND);
+            shareIntent.setType("text/csv");
+            shareIntent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(file));
+            try {
+                startActivity(Intent.createChooser(shareIntent, "分享CSV"));
+            } catch (ActivityNotFoundException e) {
+                // no chooser available
+            }
+
+        } catch (IOException e) {
+            statusText.setText("导出失败: " + e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    //  Utilities
+    // ─────────────────────────────────────────────
+
+    private void vibrate(long ms) {
+        try {
+            Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = vm.getDefaultVibrator();
+            } else {
+                vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator != null && vibrator.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+                } else {
+                    vibrator.vibrate(ms);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 }
