@@ -159,6 +159,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Record section
     private TextView recordStatusText;
     private TextView recordCountText;
+    private TextView recordTimeText;
+    private long recordStartTime = 0;
 
     // ─────────────────────────────────────────────
     //  Inner classes: GlassCard, GlassButton, QualityBarView
@@ -679,6 +681,13 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            // ACTION_DOWN 时就拦截，阻止系统音量条弹出
+            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP ||
+                event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                return true;
+            }
+        }
         if (event.getAction() == KeyEvent.ACTION_UP) {
             // 音量上 → 锁定/解锁
             if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP) {
@@ -692,10 +701,17 @@ public class MainActivity extends Activity implements SensorEventListener {
                 isRecording = !isRecording;
                 if (isRecording) {
                     csvData.clear();
+                    recordStartTime = System.currentTimeMillis();
                     continuousMode = true;
                     if (recordBtn != null) { recordBtn.setLabel("停止"); recordBtn.setActive(true); }
                     if (recordStatusText != null) { recordStatusText.setText("● 记录中"); recordStatusText.setTextColor(0xFFFF3B30); }
+                    if (recordTimeText != null) recordTimeText.setVisibility(View.VISIBLE);
                     if (continuousBtn != null) continuousBtn.setLabel("连续模式 ✓");
+                    // 立即记录当前距离
+                    if (filteredDistance >= 0) {
+                        csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                        if (recordCountText != null) recordCountText.setText("1 条数据");
+                    }
                 } else {
                     continuousMode = false;
                     if (recordBtn != null) { recordBtn.setLabel("开始"); recordBtn.setActive(false); }
@@ -892,6 +908,16 @@ public class MainActivity extends Activity implements SensorEventListener {
         cntLp.topMargin = dp(4);
         infoCol.addView(recordCountText, cntLp);
 
+        recordTimeText = new TextView(this);
+        recordTimeText.setText("");
+        recordTimeText.setTextColor(C_TEXT_DIM);
+        recordTimeText.setTextSize(12);
+        recordTimeText.setVisibility(View.GONE);
+        LinearLayout.LayoutParams timeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        timeLp.topMargin = dp(2);
+        infoCol.addView(recordTimeText, timeLp);
+
         inner.addView(infoCol, infoLp);
 
         // Right: record button
@@ -904,11 +930,18 @@ public class MainActivity extends Activity implements SensorEventListener {
             isRecording = !isRecording;
             if (isRecording) {
                 csvData.clear();
+                recordStartTime = System.currentTimeMillis();
                 recordBtn.setLabel("停止");
                 recordBtn.setActive(true);
                 recordStatusText.setText("● 记录中");
                 recordStatusText.setTextColor(0xFFFF3B30);
+                recordTimeText.setVisibility(View.VISIBLE);
                 continuousMode = true;
+                // 立即记录当前距离
+                if (filteredDistance >= 0) {
+                    csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                    recordCountText.setText("1 条数据");
+                }
             } else {
                 continuousMode = false;
                 recordBtn.setLabel("开始");
@@ -1345,6 +1378,13 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if (recordCountText != null) {
                     recordCountText.setText(csvData.size() + " 条数据");
                 }
+                // Update elapsed time
+                if (recordTimeText != null && recordStartTime > 0) {
+                    long elapsed = (now - recordStartTime) / 1000;
+                    long min = elapsed / 60;
+                    long sec = elapsed % 60;
+                    recordTimeText.setText(String.format(Locale.US, "已记录 %d:%02d", min, sec));
+                }
             }
         }
     }
@@ -1372,6 +1412,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (recordCountText != null) {
             recordCountText.setText("0 条数据");
         }
+        if (recordTimeText != null) {
+            recordTimeText.setVisibility(View.GONE);
+            recordTimeText.setText("");
+        }
+        recordStartTime = 0;
         if (continuousBtn != null) continuousBtn.setLabel("连续模式");
         currentDistance = -1;
         filteredDistance = -1;
