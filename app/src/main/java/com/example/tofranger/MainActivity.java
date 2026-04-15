@@ -957,9 +957,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar.setBackground(bg);
         bottomBar.setPadding(dp(8), dp(8), dp(8), dp(8));
 
-        // Software layer for custom drawing overlay
-        bottomBar.setLayerType(LAYER_TYPE_SOFTWARE, null);
-
         // ── Glass shine overlay (drawn on bottomBar) ──
         View glassOverlay = new View(this) {
             private final Paint shineP = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -999,6 +996,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         };
         glassOverlay.setWillNotDraw(false);
+        glassOverlay.setBackgroundColor(Color.TRANSPARENT);
+        glassOverlay.setLayerType(LAYER_TYPE_SOFTWARE, null);
 
         // ── Buttons ──
         int btnSize = dp(56);
@@ -1056,12 +1055,12 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar.addView(unitBtn, btnLp);
         bottomBar.addView(moreBtn, btnLp);
 
-        // Compose: overlay on top of buttons
+        // Compose: glass overlay behind, buttons on top
         FrameLayout overlayContainer = new FrameLayout(this);
-        overlayContainer.addView(bottomBar, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         overlayContainer.addView(glassOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        overlayContainer.addView(bottomBar, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         floatContainer.addView(overlayContainer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
