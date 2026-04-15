@@ -708,8 +708,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                     if (recordTimeText != null) recordTimeText.setVisibility(View.VISIBLE);
                     if (continuousBtn != null) continuousBtn.setLabel("连续模式 ✓");
                     // 立即记录当前距离
-                    if (filteredDistance >= 0) {
-                        csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                    float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
+                    if (dist >= 0) {
+                        csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
                         if (recordCountText != null) recordCountText.setText("1 条数据");
                     }
                 } else {
@@ -938,8 +939,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                 recordTimeText.setVisibility(View.VISIBLE);
                 continuousMode = true;
                 // 立即记录当前距离
-                if (filteredDistance >= 0) {
-                    csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
+                if (dist >= 0) {
+                    csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
                     recordCountText.setText("1 条数据");
                 }
             } else {
@@ -1340,7 +1342,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             // Auto-unfreeze when shake stops
             if (wasShaking && !shakeDetector.isShaking() && isLocked) {
                 isLocked = false;
-                updateLockButton();
+                runOnUiThread(() -> updateLockButton());
             }
         } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
             tiltCompensator.updateGyroscope(event);
@@ -1362,30 +1364,32 @@ public class MainActivity extends Activity implements SensorEventListener {
         filteredDistance = filter.filter(rawMm);
         stats.add(filteredDistance >= 0 ? filteredDistance : rawMm);
 
-        // Direct UI update (matching v1.1 behavior that worked)
         long now = System.currentTimeMillis();
-        if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
-            lastUiUpdateMs = now;
-            updateDisplay(currentDistance);
-        }
 
-        // Continuous CSV recording
+        // Continuous CSV recording (background thread is fine for data)
         if (continuousMode && isRecording) {
             if (now - lastContinuousCsv >= CONTINUOUS_CSV_INTERVAL_MS) {
-                csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                if (filteredDistance >= 0) {
+                    csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees()});
+                }
                 lastContinuousCsv = now;
-                // Update record count display
-                if (recordCountText != null) {
-                    recordCountText.setText(csvData.size() + " 条数据");
-                }
-                // Update elapsed time
-                if (recordTimeText != null && recordStartTime > 0) {
-                    long elapsed = (now - recordStartTime) / 1000;
-                    long min = elapsed / 60;
-                    long sec = elapsed % 60;
-                    recordTimeText.setText(String.format(Locale.US, "已记录 %d:%02d", min, sec));
-                }
+                // Update UI on main thread
+                final int count = csvData.size();
+                final long elapsed = (now - recordStartTime) / 1000;
+                runOnUiThread(() -> {
+                    if (recordCountText != null) recordCountText.setText(count + " 条数据");
+                    if (recordTimeText != null && recordStartTime > 0) {
+                        recordTimeText.setText(String.format(Locale.US, "已记录 %d:%02d", elapsed / 60, elapsed % 60));
+                    }
+                });
             }
+        }
+
+        // UI update on main thread
+        if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
+            lastUiUpdateMs = now;
+            final float displayDist = currentDistance;
+            runOnUiThread(() -> updateDisplay(displayDist));
         }
     }
 
