@@ -9,8 +9,7 @@ import android.hardware.SensorEvent;
 public class ShakeDetector {
 
     private static final float SHAKE_THRESHOLD = 25f; // m/s² (正常重力≈9.8，25≈2.5g 才判定抖动)
-    private static final long SHAKE_COOLDOWN_MS = 500; // min time between shake events
-    private static final long SETTLE_TIME_MS = 300; // 抖动停止后多久恢复（缩短）
+    private static final long SETTLE_TIME_MS = 300; // 抖动停止后多久恢复
 
     private long lastShakeTime = 0;
     private long lastAccelTime = 0;

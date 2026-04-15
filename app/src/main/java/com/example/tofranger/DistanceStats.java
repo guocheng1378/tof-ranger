@@ -13,6 +13,7 @@ public class DistanceStats {
 
     private final ArrayDeque<Float> window;
     private final int maxSize;
+    private final float[] sortBuffer; // reusable buffer to avoid allocation per call
 
     // All-time stats
     private float allTimeMin = Float.MAX_VALUE;
@@ -28,6 +29,7 @@ public class DistanceStats {
     public DistanceStats(int windowSize) {
         this.maxSize = windowSize;
         this.window = new ArrayDeque<>(windowSize);
+        this.sortBuffer = new float[windowSize];
     }
 
     public DistanceStats() {
@@ -89,15 +91,14 @@ public class DistanceStats {
         return (float) Math.sqrt(sumSq / size);
     }
 
-    /** Median over sliding window */
+    /** Median over sliding window — uses pre-allocated sortBuffer */
     public float getMedian() {
         int size = window.size();
         if (size == 0) return 0;
-        float[] sorted = new float[size];
         int i = 0;
-        for (float v : window) sorted[i++] = v;
-        Arrays.sort(sorted);
-        return sorted[size / 2];
+        for (float v : window) sortBuffer[i++] = v;
+        Arrays.sort(sortBuffer, 0, size);
+        return sortBuffer[size / 2];
     }
 
     public int getSampleCount() {

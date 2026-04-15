@@ -9,6 +9,7 @@ import java.util.Arrays;
 public class DistanceFilter {
 
     private final float[] medianBuffer;
+    private final float[] sortBuffer; // reusable sort buffer to avoid allocation per call
     private final int windowSize;
     private int medianPos = 0;
     private boolean medianFilled = false;
@@ -30,6 +31,7 @@ public class DistanceFilter {
     public DistanceFilter(int windowSize, float alpha, float maxJumpMm, float maxRangeMm) {
         this.windowSize = windowSize;
         this.medianBuffer = new float[windowSize];
+        this.sortBuffer = new float[windowSize];
         this.alpha = alpha;
         this.maxJumpMm = maxJumpMm;
         this.maxRangeMm = maxRangeMm;
@@ -74,11 +76,10 @@ public class DistanceFilter {
             return applyEma(rawMm);
         }
 
-        // Median
-        float[] sorted = new float[count];
-        System.arraycopy(medianBuffer, 0, sorted, 0, count);
-        Arrays.sort(sorted);
-        float median = sorted[count / 2];
+        // Median — use reusable sortBuffer instead of allocating
+        System.arraycopy(medianBuffer, 0, sortBuffer, 0, count);
+        Arrays.sort(sortBuffer, 0, count);
+        float median = sortBuffer[count / 2];
 
         return applyEma(median);
     }

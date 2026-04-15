@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -98,7 +97,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     // ── State ──
     private volatile float currentDistance = -1;
-    private float smoothDisplay = -1; // smoothed display value
+    private volatile float smoothDisplay = -1; // smoothed display value (needs volatile for sensor/UI thread)
     private volatile float filteredDistance = -1;
     private boolean isLocked = false;
     private boolean isPaused = false;
@@ -178,9 +177,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
+        private final RectF bottomEdge = new RectF();
         private float cornerRadius;
         private int accentTint = 0;
+        // Cached gradient bounds to detect size changes
+        private float lastSpecH = -1, lastRimH = -1, lastW = -1, lastH = -1;
+        private boolean themeDirty = true;
 
         public GlassCard(Context ctx) {
             super(ctx);
@@ -192,15 +196,43 @@ public class MainActivity extends Activity implements SensorEventListener {
             edgePaint.setColor(C_GLASS_EDGE);
             edgePaint.setStyle(Paint.Style.STROKE);
             edgePaint.setStrokeWidth(1.2f);
-            shadowPaint.setColor(0x22000000);
-            shadowPaint.setStyle(Paint.Style.FILL);
-            shadowPaint.setMaskFilter(new BlurMaskFilter(20f, BlurMaskFilter.Blur.OUTER));
-            setLayerType(LAYER_TYPE_SOFTWARE, null);
+            // Remove BlurMaskFilter + software layer: use elevation shadow instead
+            tintPaint.setStyle(Paint.Style.FILL);
         }
 
         public void setAccentTint(int color) {
             this.accentTint = color;
             invalidate();
+        }
+
+        /** Call after theme change to refresh gradient colors */
+        public void onThemeChanged() {
+            themeDirty = true;
+            bgPaint.setColor(C_GLASS_BG);
+            edgePaint.setColor(C_GLASS_EDGE);
+            invalidate();
+        }
+
+        private void rebuildGradientsIfNeeded() {
+            float w = getWidth();
+            float h = getHeight();
+            float specH = h * 0.35f;
+            float rimH = h * 0.25f;
+            if (!themeDirty && w == lastW && h == lastH && specH == lastSpecH && rimH == lastRimH) return;
+            lastW = w; lastH = h; lastSpecH = specH; lastRimH = rimH; themeDirty = false;
+            float inset = 5f;
+            // Shine gradient (top specular)
+            int specTopC = isLightTheme ? 0x1A000000 : 0x22FFFFFF;
+            shinePaint.setShader(new LinearGradient(
+                    inset, inset, inset, inset + specH,
+                    new int[]{specTopC, 0x00000000},
+                    null, Shader.TileMode.CLAMP));
+            // Rim gradient (bottom reflection)
+            int rimBotC = isLightTheme ? 0x0A000000 : 0x0DFFFFFF;
+            rimPaint.setShader(new LinearGradient(
+                    inset, h - inset - rimH, inset, h - inset,
+                    new int[]{0x00000000, rimBotC},
+                    null, Shader.TileMode.CLAMP));
         }
 
         @Override
@@ -210,55 +242,36 @@ public class MainActivity extends Activity implements SensorEventListener {
             float inset = 5f;
             rect.set(inset, inset, getWidth() - inset, getHeight() - inset);
 
-            // Drop shadow
-            canvas.drawRoundRect(rect, r, r, shadowPaint);
-
             // Background fill
             canvas.drawRoundRect(rect, r, r, bgPaint);
 
-            // --- Apple Liquid Glass layers ---
+            rebuildGradientsIfNeeded();
 
-            // Layer 1: Top specular highlight (bright band near top)
-            float specH = rect.height() * 0.35f;
-            int specTopC = isLightTheme ? 0x1A000000 : 0x22FFFFFF;
-            int specBotC = 0x00000000;
-            shinePaint.setShader(new LinearGradient(
-                    rect.left, rect.top, rect.left, rect.top + specH,
-                    new int[]{specTopC, specBotC},
-                    null, Shader.TileMode.CLAMP));
+            // Layer 1: Top specular highlight
             canvas.drawRoundRect(rect, r, r, shinePaint);
 
-            // Layer 2: Bottom rim glow (subtle reflection from surface below)
-            float rimH = rect.height() * 0.25f;
-            int rimBotC = isLightTheme ? 0x0A000000 : 0x0DFFFFFF;
-            int rimTopC = 0x00000000;
-            rimPaint.setShader(new LinearGradient(
-                    rect.left, rect.bottom - rimH, rect.left, rect.bottom,
-                    new int[]{rimTopC, rimBotC},
-                    null, Shader.TileMode.CLAMP));
+            // Layer 2: Bottom rim glow
             canvas.drawRoundRect(rect, r, r, rimPaint);
 
-            // Layer 3: Edge highlight (rim light around entire card)
+            // Layer 3: Edge highlight
             canvas.drawRoundRect(rect, r, r, edgePaint);
 
-            // Layer 4: Inner shadow (top edge, creates depth)
+            // Layer 4: Inner shadow (top edge)
             float innerShadowH = 6f;
             int innerShadowC = isLightTheme ? 0x0D000000 : 0x15000000;
-            RectF innerRect = new RectF(rect.left + 1, rect.top + 1, rect.right - 1, rect.top + innerShadowH);
             innerShadowPaint.setShader(new LinearGradient(
-                    innerRect.left, innerRect.top, innerRect.left, innerRect.bottom,
+                    rect.left, rect.top, rect.left, rect.top + innerShadowH,
                     new int[]{innerShadowC, 0x00000000},
                     null, Shader.TileMode.CLAMP));
             innerShadowPaint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(new RectF(rect.left, rect.top, rect.right, rect.top + innerShadowH),
+            canvas.drawRoundRect(
+                    new RectF(rect.left, rect.top, rect.right, rect.top + innerShadowH),
                     r, r, innerShadowPaint);
 
             // Accent tint bottom edge
             if (accentTint != 0) {
-                Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                tintPaint.setStyle(Paint.Style.FILL);
                 float edgeH = 3.5f;
-                RectF bottomEdge = new RectF(rect.left, rect.bottom - edgeH, rect.right, rect.bottom);
+                bottomEdge.set(rect.left, rect.bottom - edgeH, rect.right, rect.bottom);
                 tintPaint.setColor(accentTint & 0x30FFFFFF);
                 canvas.drawRoundRect(bottomEdge, r, r, tintPaint);
             }
@@ -698,23 +711,28 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
             // 音量下 → 记录一条距离数据
             if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
-                if (dist >= 0) {
-                    csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
-                    final int count = csvData.size();
-                    runOnUiThread(() -> {
-                        if (recordCountText != null) recordCountText.setText(count + " 条数据");
-                        if (recordStatusText != null) {
-                            recordStatusText.setText("● 已记录");
-                            recordStatusText.setTextColor(C_ACCENT);
-                        }
-                    });
-                    vibrate(50);
-                }
+                recordSingleDataPoint();
                 return true;
             }
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    /** 记录一条距离数据点（音量下键 和 界面按钮 共用） */
+    private void recordSingleDataPoint() {
+        float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
+        if (dist >= 0) {
+            csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
+            final int count = csvData.size();
+            runOnUiThread(() -> {
+                if (recordCountText != null) recordCountText.setText(count + " 条数据");
+                if (recordStatusText != null) {
+                    recordStatusText.setText("● 已记录");
+                    recordStatusText.setTextColor(C_ACCENT);
+                }
+            });
+            vibrate(50);
+        }
     }
 
 
@@ -930,11 +948,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 recordTimeText.setVisibility(View.VISIBLE);
                 continuousMode = true;
                 // 立即记录当前距离
-                float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
-                if (dist >= 0) {
-                    csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
-                    recordCountText.setText("1 条数据");
-                }
+                recordSingleDataPoint();
             } else {
                 continuousMode = false;
                 recordBtn.setLabel("开始");
@@ -1227,8 +1241,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         int qColor = quality > 0.7f ? C_ACCENT2 : (quality > 0.4f ? C_ACCENT3 : 0xFFFF453A);
         qualityBar.setFillColor(qColor);
 
-        // Stats row
-        updateStatsRow();
+        // Stats row — skip if hidden
+        if (statMinText != null && statMinText.getParent() != null
+                && ((View) statMinText.getParent()).getVisibility() == View.VISIBLE) {
+            updateStatsRow();
+        }
 
         // Status line
         String tiltInfo = tiltCompensator.getTiltQuality();
