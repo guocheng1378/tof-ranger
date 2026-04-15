@@ -82,7 +82,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private static final int C_SEP_DIM_LIGHT   = 0x331C1C1E;
 
     // ── Active colors (set by theme) ──
-    private boolean isLightTheme = false;
+    private boolean isLightTheme = true;
     private int C_BG, C_ACCENT, C_ACCENT2, C_ACCENT3;
     private int C_TEXT, C_TEXT_DIM, C_GLASS_BG, C_GLASS_EDGE, C_GLASS_SHINE;
     private int C_BAR_BG, C_MORE_BG, C_DEBUG_DIM, C_SEP_DIM;
@@ -637,7 +637,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         tiltCompensator = new TiltCompensator();
 
         // Init colors
-        applyTheme(false);
+        applyTheme(true); // 默认白色主题
 
         // Build UI
         buildUI();
@@ -696,31 +696,21 @@ public class MainActivity extends Activity implements SensorEventListener {
                 vibrate(30);
                 return true;
             }
-            // 音量下 → 开始/停止记录
+            // 音量下 → 记录一条距离数据
             if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                isRecording = !isRecording;
-                if (isRecording) {
-                    csvData.clear();
-                    recordStartTime = System.currentTimeMillis();
-                    continuousMode = true;
-                    if (recordBtn != null) { recordBtn.setLabel("停止"); recordBtn.setActive(true); }
-                    if (recordStatusText != null) { recordStatusText.setText("● 记录中"); recordStatusText.setTextColor(0xFFFF3B30); }
-                    if (recordTimeText != null) recordTimeText.setVisibility(View.VISIBLE);
-                    if (continuousBtn != null) continuousBtn.setLabel("连续模式 ✓");
-                    // 立即记录当前距离
-                    float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
-                    if (dist >= 0) {
-                        csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
-                        if (recordCountText != null) recordCountText.setText("1 条数据");
-                    }
-                } else {
-                    continuousMode = false;
-                    if (recordBtn != null) { recordBtn.setLabel("开始"); recordBtn.setActive(false); }
-                    if (recordStatusText != null) { recordStatusText.setText("数据记录"); recordStatusText.setTextColor(C_TEXT); }
-                    if (continuousBtn != null) continuousBtn.setLabel("连续模式");
-                    if (!csvData.isEmpty()) exportCsv();
+                float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
+                if (dist >= 0) {
+                    csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees()});
+                    final int count = csvData.size();
+                    runOnUiThread(() -> {
+                        if (recordCountText != null) recordCountText.setText(count + " 条数据");
+                        if (recordStatusText != null) {
+                            recordStatusText.setText("● 已记录");
+                            recordStatusText.setTextColor(C_ACCENT);
+                        }
+                    });
+                    vibrate(50);
                 }
-                vibrate(50);
                 return true;
             }
         }
@@ -863,6 +853,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         statMaxText = refs[1];
         statAvgText = refs[2];
         statStdText = refs[3];
+        statsRow.setVisibility(View.GONE); // 隐藏统计行
         contentLayout.addView(statsRow);
     }
 
@@ -971,18 +962,26 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void buildBottomBar() {
         // ── Floating container with outer padding (the "float" effect) ──
         FrameLayout floatContainer = new FrameLayout(this);
-        floatContainer.setPadding(dp(16), 0, dp(16), dp(12));
+        floatContainer.setPadding(dp(16), 0, dp(16), dp(16));
+
+        // Drop shadow for glass float effect
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            floatContainer.setOutlineAmbientShadowColor(0x1A000000);
+            floatContainer.setOutlineSpotShadowColor(0x22000000);
+            floatContainer.setElevation(dp(12));
+        }
 
         bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
         bottomBar.setClipChildren(false);
 
-        // ── Apple Liquid Glass background ──
+        // ── Apple Liquid Glass background (white theme default) ──
         float cornerR = dp(28);
         GradientDrawable bg = new GradientDrawable();
         if (isLightTheme) {
-            bg.setColor(0xD9F2F2F7);
+            // Liquid glass: bright white frosted with subtle gradient
+            bg.setColor(0xE6FFFFFF);
         } else {
             bg.setColor(0xD92C2C2E);
         }
@@ -1057,10 +1056,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         morePanel = new LinearLayout(this);
         morePanel.setOrientation(LinearLayout.VERTICAL);
 
-        // Apple liquid glass style for panel
+        // Apple liquid glass style for panel (white theme)
         GradientDrawable panelBg = new GradientDrawable();
         if (isLightTheme) {
-            panelBg.setColor(0xE6F2F2F7);
+            panelBg.setColor(0xEEFFFFFF);
         } else {
             panelBg.setColor(0xE62C2C2E);
         }
