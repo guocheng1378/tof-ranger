@@ -1,11 +1,9 @@
 package com.example.tofranger;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Bitmap;
 import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -14,7 +12,6 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -23,7 +20,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
@@ -34,19 +30,17 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import androidx.core.content.FileProvider;
+
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -133,6 +127,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private TextView statusText;
     private QualityBarView qualityBar;
     private TextView debugText;
+    private TextView statMinText, statMaxText, statAvgText, statStdText;
 
     // Bottom buttons
     private GlassButton lockBtn;
@@ -209,9 +204,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
 
             // Shine gradient (top half, fading down)
+            int shineTop = isLightTheme ? 0x10000000 : 0x15FFFFFF;
+            int shineBot = 0x00000000;
             shinePaint.setShader(new LinearGradient(
                     rect.left, rect.top, rect.left, rect.top + rect.height() * 0.5f,
-                    new int[]{0x15FFFFFF, 0x00FFFFFF},
+                    new int[]{shineTop, shineBot},
                     null, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, shinePaint);
 
@@ -229,7 +226,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         private final Paint reflectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
         private String label = "";
         private int accentColor = C_ACCENT;
@@ -253,10 +249,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             textPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
             textPaint.setTextAlign(Paint.Align.CENTER);
             textPaint.setAntiAlias(true);
-            iconPaint.setColor(C_TEXT);
-            iconPaint.setStyle(Paint.Style.STROKE);
-            iconPaint.setStrokeWidth(2.5f);
-            iconPaint.setAntiAlias(true);
             reflectionPaint.setStyle(Paint.Style.FILL);
         }
 
@@ -296,9 +288,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             canvas.drawRoundRect(rect, r, r, bgPaint);
 
             // Glass reflection (top half)
+            int refTop = isLightTheme ? 0x18000000 : 0x18FFFFFF;
+            int refBot = 0x00000000;
             reflectionPaint.setShader(new LinearGradient(
                     rect.left, rect.top, rect.left, rect.top + rect.height() * 0.45f,
-                    0x18FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
+                    refTop, refBot, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, r, r, reflectionPaint);
 
             // Glow edge
@@ -580,6 +574,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         statsRow.setPadding(0, dp(8), 0, dp(8));
 
         String[] labels = {"min", "max", "avg", "σ"};
+        TextView[] refs = new TextView[4];
         for (int i = 0; i < labels.length; i++) {
             if (i > 0) {
                 TextView sep = new TextView(this);
@@ -592,9 +587,13 @@ public class MainActivity extends Activity implements SensorEventListener {
             tv.setText(labels[i] + ": —");
             tv.setTextColor(C_TEXT_DIM);
             tv.setTextSize(12);
-            tv.setTag("stat_" + labels[i]);
+            refs[i] = tv;
             statsRow.addView(tv);
         }
+        statMinText = refs[0];
+        statMaxText = refs[1];
+        statAvgText = refs[2];
+        statStdText = refs[3];
         contentLayout.addView(statsRow);
     }
 
@@ -763,7 +762,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private void updatePauseButton() {
         pauseBtn.setLabel(isPaused ? "▶" : "⏸");
-        pauseBtn.setAccentColor(isPaused ? C_ACCENT2 : C_ACCENT2);
     }
 
     private void updateUnitDisplay() {
@@ -850,28 +848,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     private void updateStatsRow() {
-        for (int i = 0; i < contentLayout.getChildCount(); i++) {
-            View child = contentLayout.getChildAt(i);
-            if (child instanceof LinearLayout) {
-                LinearLayout row = (LinearLayout) child;
-                for (int j = 0; j < row.getChildCount(); j++) {
-                    View v = row.getChildAt(j);
-                    if (v instanceof TextView && v.getTag() != null) {
-                        String tag = (String) v.getTag();
-                        float val;
-                        if (tag.equals("stat_min")) val = stats.getMin();
-                        else if (tag.equals("stat_max")) val = stats.getMax();
-                        else if (tag.equals("stat_avg")) val = stats.getAvg();
-                        else if (tag.equals("stat_σ")) val = stats.getStdDev();
-                        else continue;
-
-                        String label = tag.replace("stat_", "");
-                        if (val > 0 && !isMm) val /= 25.4f;
-                        ((TextView) v).setText(String.format(Locale.US, "%s: %.1f", label, val));
-                    }
-                }
-            }
-        }
+        float scale = isMm ? 1f : 1f / 25.4f;
+        String fmt = isMm ? "%s: %.1f" : "%s: %.2f";
+        if (statMinText != null) statMinText.setText(String.format(Locale.US, fmt, "min", stats.getMin() * scale));
+        if (statMaxText != null) statMaxText.setText(String.format(Locale.US, fmt, "max", stats.getMax() * scale));
+        if (statAvgText != null) statAvgText.setText(String.format(Locale.US, fmt, "avg", stats.getAvg() * scale));
+        if (statStdText != null) statStdText.setText(String.format(Locale.US, fmt, "σ", stats.getStdDev() * scale));
     }
 
     // ─────────────────────────────────────────────
@@ -1016,10 +998,13 @@ public class MainActivity extends Activity implements SensorEventListener {
             statusText.setText("已导出: " + filename);
             vibrate(80);
 
-            // Try to share
+            // Try to share via FileProvider (compatible with Android 7+)
+            Uri contentUri = FileProvider.getUriForFile(this,
+                    getApplicationContext().getPackageName() + ".fileprovider", file);
             Intent shareIntent = new Intent(Intent.ACTION_SEND);
             shareIntent.setType("text/csv");
-            shareIntent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(file));
+            shareIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
+            shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             try {
                 startActivity(Intent.createChooser(shareIntent, "分享CSV"));
             } catch (ActivityNotFoundException e) {
