@@ -85,6 +85,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     private int C_TEXT, C_TEXT_DIM, C_GLASS_BG, C_GLASS_EDGE, C_GLASS_SHINE;
     private int C_BAR_BG, C_MORE_BG, C_DEBUG_DIM, C_SEP_DIM;
     // ── Sensor ──
+    // 小米自定义 ToF 传感器类型（非 AOSP 标准，由 MIUI/HyperOS 定义）
+    private static final int SENSOR_TYPE_MIUI_TOF = 33171040;
+    private boolean isProximityFallback = false;
     private SensorManager sensorManager;
     private Sensor tofSensor;
     private Sensor accelSensor;
@@ -867,17 +870,36 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void findTofSensor() {
         if (sensorManager == null) return;
 
-        // Try dToF sensor types
-        tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
+        // 遍历所有传感器，匹配小米自定义 ToF 类型或名称
+        List<Sensor> all = sensorManager.getSensorList(Sensor.TYPE_ALL);
+        tofSensor = null;
+        isProximityFallback = false;
+
+        for (Sensor s : all) {
+            String n = s.getName().toLowerCase();
+            int type = s.getType();
+            if ((type == SENSOR_TYPE_MIUI_TOF || n.contains("tof") || n.contains("vl53")) && tofSensor == null) {
+                tofSensor = s;
+                break;
+            }
+        }
+
+        // 降级到 Proximity（二值传感器，精度有限）
+        if (tofSensor == null) {
+            tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
+            if (tofSensor != null) {
+                isProximityFallback = true;
+            }
+        }
 
         if (tofSensor == null) {
             statusText.setText("未找到距离传感器");
             return;
         }
 
-        // Show sensor info so user knows what type they have
         float maxRange = tofSensor.getMaximumRange();
-        statusText.setText("传感器: " + tofSensor.getName() + " | 量程: " + maxRange + "mm");
+        String label = isProximityFallback ? " (降级 Proximity)" : "";
+        statusText.setText("传感器: " + tofSensor.getName() + label + " | 量程: " + maxRange);
 
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
@@ -907,7 +929,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() == Sensor.TYPE_PROXIMITY) {
+        int sType = event.sensor.getType();
+        if (sType == SENSOR_TYPE_MIUI_TOF || sType == Sensor.TYPE_PROXIMITY) {
             handleTofReading(event.values[0]);
         } else if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
             boolean wasShaking = shakeDetector.isShaking();
