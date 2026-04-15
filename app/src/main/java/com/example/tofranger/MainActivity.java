@@ -262,7 +262,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             bgPaint.setStyle(Paint.Style.FILL);
 
-            labelPaint.setTextAlign(Paint.CENTER);
+            labelPaint.setTextAlign(Paint.Align.CENTER);
             labelPaint.setAntiAlias(true);
             labelPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         }
@@ -331,19 +331,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                         int bgColor = Color.argb(0x15, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor));
                         iconPaint.setColor(bgColor);
                         iconPaint.setStyle(Paint.Style.FILL);
-                        c.drawRoundRect(bgR, dp(12), dp(12), iconPaint);
+                        canvas.drawRoundRect(bgR, dp(12), dp(12), iconPaint);
                         iconPaint.setStyle(Paint.Style.STROKE);
 
                         // Accent edge
                         iconPaint.setColor(Color.argb(0x30, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
                         RectF edge = new RectF(bgR.left, bgR.bottom - dp(2), bgR.right, bgR.bottom);
-                        c.drawRoundRect(edge, dp(12), dp(12), iconPaint);
+                        canvas.drawRoundRect(edge, dp(12), dp(12), iconPaint);
 
                         labelPaint.setColor(isLightTheme ? C_TEXT_LIGHT : C_TEXT_DARK);
                         labelPaint.setTextSize(dp(13));
                         Paint.FontMetrics fm = labelPaint.getFontMetrics();
                         float ty = h / 2f - (fm.ascent + fm.descent) / 2f;
-                        c.drawText(label, cx, ty, labelPaint);
+                        canvas.drawText(label, cx, ty, labelPaint);
                     }
                     break;
             }
