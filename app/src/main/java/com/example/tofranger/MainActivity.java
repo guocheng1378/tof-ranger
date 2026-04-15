@@ -680,30 +680,28 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_UP) {
-            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP ||
-                event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                continuousMode = !continuousMode;
-                if (continuousMode) {
-                    isRecording = true;
+            // 音量上 → 锁定/解锁
+            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP) {
+                isLocked = !isLocked;
+                updateLockButton();
+                vibrate(30);
+                return true;
+            }
+            // 音量下 → 开始/停止记录
+            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                isRecording = !isRecording;
+                if (isRecording) {
+                    csvData.clear();
+                    continuousMode = true;
+                    if (recordBtn != null) { recordBtn.setLabel("停止"); recordBtn.setActive(true); }
+                    if (recordStatusText != null) { recordStatusText.setText("● 记录中"); recordStatusText.setTextColor(0xFFFF3B30); }
                     if (continuousBtn != null) continuousBtn.setLabel("连续模式 ✓");
-                    if (recordBtn != null) {
-                        recordBtn.setLabel("停止");
-                        recordBtn.setActive(true);
-                    }
-                    if (recordStatusText != null) {
-                        recordStatusText.setText("● 记录中");
-                        recordStatusText.setTextColor(0xFFFF3B30);
-                    }
                 } else {
+                    continuousMode = false;
+                    if (recordBtn != null) { recordBtn.setLabel("开始"); recordBtn.setActive(false); }
+                    if (recordStatusText != null) { recordStatusText.setText("数据记录"); recordStatusText.setTextColor(C_TEXT); }
                     if (continuousBtn != null) continuousBtn.setLabel("连续模式");
-                    if (recordBtn != null) {
-                        recordBtn.setLabel("开始");
-                        recordBtn.setActive(false);
-                    }
-                    if (recordStatusText != null) {
-                        recordStatusText.setText("数据记录");
-                        recordStatusText.setTextColor(C_TEXT);
-                    }
+                    if (!csvData.isEmpty()) exportCsv();
                 }
                 vibrate(50);
                 return true;
