@@ -55,16 +55,41 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements SensorEventListener {
 
-    // ── Colors ──
-    private static final int C_BG        = Color.BLACK;
-    private static final int C_ACCENT    = 0xFF5AC8FA; // blue
-    private static final int C_ACCENT2   = 0xFF34C759; // green
-    private static final int C_ACCENT3   = 0xFFFF9F0A; // orange
-    private static final int C_TEXT      = 0xFFFFFFFF;
-    private static final int C_TEXT_DIM  = 0x99FFFFFF;
-    private static final int C_GLASS_BG  = 0x1AFFFFFF;
-    private static final int C_GLASS_EDGE= 0x33FFFFFF;
-    private static final int C_GLASS_SHINE= 0x0CFFFFFF;
+    // ── Colors — Dark theme ──
+    private static final int C_BG_DARK        = Color.BLACK;
+    private static final int C_ACCENT_DARK    = 0xFF5AC8FA; // blue
+    private static final int C_ACCENT2_DARK   = 0xFF34C759; // green
+    private static final int C_ACCENT3_DARK   = 0xFFFF9F0A; // orange
+    private static final int C_TEXT_DARK      = 0xFFFFFFFF;
+    private static final int C_TEXT_DIM_DARK  = 0x99FFFFFF;
+    private static final int C_GLASS_BG_DARK  = 0x1AFFFFFF;
+    private static final int C_GLASS_EDGE_DARK= 0x33FFFFFF;
+    private static final int C_GLASS_SHINE_DARK= 0x0CFFFFFF;
+    private static final int C_BAR_BG_DARK    = 0xCC000000;
+    private static final int C_MORE_BG_DARK   = 0xEE111111;
+    private static final int C_DEBUG_DIM_DARK = 0x66FFFFFF;
+    private static final int C_SEP_DIM_DARK   = 0x33FFFFFF;
+
+    // ── Colors — Light theme ──
+    private static final int C_BG_LIGHT        = 0xFFF2F2F7;
+    private static final int C_ACCENT_LIGHT    = 0xFF007AFF; // blue
+    private static final int C_ACCENT2_LIGHT   = 0xFF34C759; // green
+    private static final int C_ACCENT3_LIGHT   = 0xFFFF9500; // orange
+    private static final int C_TEXT_LIGHT      = 0xFF1C1C1E;
+    private static final int C_TEXT_DIM_LIGHT  = 0x991C1C1E;
+    private static final int C_GLASS_BG_LIGHT  = 0xCCFFFFFF;
+    private static final int C_GLASS_EDGE_LIGHT= 0x44000000;
+    private static final int C_GLASS_SHINE_LIGHT= 0x15FFFFFF;
+    private static final int C_BAR_BG_LIGHT    = 0xCCF2F2F7;
+    private static final int C_MORE_BG_LIGHT   = 0xEEFFFFFF;
+    private static final int C_DEBUG_DIM_LIGHT = 0x661C1C1E;
+    private static final int C_SEP_DIM_LIGHT   = 0x331C1C1E;
+
+    // ── Active colors (set by theme) ──
+    private boolean isLightTheme = false;
+    private int C_BG, C_ACCENT, C_ACCENT2, C_ACCENT3;
+    private int C_TEXT, C_TEXT_DIM, C_GLASS_BG, C_GLASS_EDGE, C_GLASS_SHINE;
+    private int C_BAR_BG, C_MORE_BG, C_DEBUG_DIM, C_SEP_DIM;
     // ── Sensor ──
     private SensorManager sensorManager;
     private Sensor tofSensor;
@@ -121,6 +146,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private GlassButton calibrateBtn;
     private GlassButton csvBtn;
     private GlassButton continuousBtn;
+    private GlassButton themeBtn;
 
     // ─────────────────────────────────────────────
     //  Inner classes: GlassCard, GlassButton, QualityBarView
@@ -129,7 +155,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     /**
      * Frosted glass card with semi-transparent bg, shine gradient, edge highlight, shadow.
      */
-    static class GlassCard extends FrameLayout {
+    class GlassCard extends FrameLayout {
 
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint shinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -197,7 +223,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     /**
      * Liquid glass floating button with accent tint, glass reflection, glow edge, press animation.
      */
-    static class GlassButton extends View {
+    class GlassButton extends View {
 
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint reflectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -331,7 +357,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     /**
      * Simple progress bar showing measurement quality (0-100%).
      */
-    static class QualityBarView extends View {
+    class QualityBarView extends View {
 
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -342,7 +368,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         public QualityBarView(Context ctx) {
             super(ctx);
-            bgPaint.setColor(0x1AFFFFFF);
+            bgPaint.setColor(isLightTheme ? 0x1A000000 : 0x1AFFFFFF);
             bgPaint.setStyle(Paint.Style.FILL);
             fillPaint.setStyle(Paint.Style.FILL);
             fillColor = C_ACCENT2;
@@ -389,6 +415,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         shakeDetector = new ShakeDetector();
         tiltCompensator = new TiltCompensator();
 
+        // Init colors
+        applyTheme(false);
+
         // Build UI
         buildUI();
         setContentView(rootLayout);
@@ -396,6 +425,25 @@ public class MainActivity extends Activity implements SensorEventListener {
         // Init sensors
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         findTofSensor();
+    }
+
+    private void applyTheme(boolean light) {
+        isLightTheme = light;
+        if (light) {
+            C_BG = C_BG_LIGHT;  C_ACCENT = C_ACCENT_LIGHT;  C_ACCENT2 = C_ACCENT2_LIGHT;
+            C_ACCENT3 = C_ACCENT3_LIGHT;  C_TEXT = C_TEXT_LIGHT;  C_TEXT_DIM = C_TEXT_DIM_LIGHT;
+            C_GLASS_BG = C_GLASS_BG_LIGHT;  C_GLASS_EDGE = C_GLASS_EDGE_LIGHT;
+            C_GLASS_SHINE = C_GLASS_SHINE_LIGHT;  C_BAR_BG = C_BAR_BG_LIGHT;
+            C_MORE_BG = C_MORE_BG_LIGHT;  C_DEBUG_DIM = C_DEBUG_DIM_LIGHT;
+            C_SEP_DIM = C_SEP_DIM_LIGHT;
+        } else {
+            C_BG = C_BG_DARK;  C_ACCENT = C_ACCENT_DARK;  C_ACCENT2 = C_ACCENT2_DARK;
+            C_ACCENT3 = C_ACCENT3_DARK;  C_TEXT = C_TEXT_DARK;  C_TEXT_DIM = C_TEXT_DIM_DARK;
+            C_GLASS_BG = C_GLASS_BG_DARK;  C_GLASS_EDGE = C_GLASS_EDGE_DARK;
+            C_GLASS_SHINE = C_GLASS_SHINE_DARK;  C_BAR_BG = C_BAR_BG_DARK;
+            C_MORE_BG = C_MORE_BG_DARK;  C_DEBUG_DIM = C_DEBUG_DIM_DARK;
+            C_SEP_DIM = C_SEP_DIM_DARK;
+        }
     }
 
     @Override
@@ -536,7 +584,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (i > 0) {
                 TextView sep = new TextView(this);
                 sep.setText("  ·  ");
-                sep.setTextColor(0x33FFFFFF);
+                sep.setTextColor(C_SEP_DIM);
                 sep.setTextSize(12);
                 statsRow.addView(sep);
             }
@@ -552,7 +600,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private void buildDebugSection() {
         debugText = new TextView(this);
-        debugText.setTextColor(0x66FFFFFF);
+        debugText.setTextColor(C_DEBUG_DIM);
         debugText.setTextSize(11);
         debugText.setVisibility(View.GONE);
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
@@ -565,7 +613,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
-        bottomBar.setBackgroundColor(0xCC000000); // semi-transparent black
+        bottomBar.setBackgroundColor(C_BAR_BG);
         bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
 
         int btnSize = dp(52);
@@ -629,7 +677,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void buildMorePanel() {
         morePanel = new LinearLayout(this);
         morePanel.setOrientation(LinearLayout.VERTICAL);
-        morePanel.setBackgroundColor(0xEE111111);
+        morePanel.setBackgroundColor(C_MORE_BG);
         morePanel.setPadding(dp(16), dp(12), dp(16), dp(12));
         morePanel.setVisibility(View.GONE);
 
@@ -677,6 +725,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             vibrate(30);
         });
 
+        themeBtn = makeFlatButton(isLightTheme ? "🌙 深色主题" : "☀️ 浅色主题", C_TEXT_DIM);
+        themeBtn.setOnPress(() -> {
+            isLightTheme = !isLightTheme;
+            applyTheme(isLightTheme);
+            rebuildUI();
+            vibrate(30);
+        });
+
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, rowHeight);
         rowLp.setMargins(0, dp(4), 0, dp(4));
@@ -684,6 +740,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         morePanel.addView(calibrateBtn, rowLp);
         morePanel.addView(csvBtn, rowLp);
         morePanel.addView(continuousBtn, rowLp);
+        morePanel.addView(themeBtn, rowLp);
     }
 
     private GlassButton makeFlatButton(String label, int accent) {
@@ -718,6 +775,19 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (moreExpanded) {
             morePanel.animate().translationY(0).setDuration(250).start();
         }
+    }
+
+    private void rebuildUI() {
+        rootLayout.removeAllViews();
+        buildUI();
+        setContentView(rootLayout);
+        themeBtn.setLabel(isLightTheme ? "🌙 深色主题" : "☀️ 浅色主题");
+        themeBtn.setAccentColor(C_TEXT_DIM);
+        // Restore state display
+        if (filteredDistance >= 0) updateDisplay(filteredDistance);
+        updateLockButton();
+        updatePauseButton();
+        updateUnitDisplay();
     }
 
     private void updateDisplay(float distMm) {
@@ -856,8 +926,10 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             // Auto-unfreeze when shake stops
             if (wasShaking && !shakeDetector.isShaking() && isLocked) {
-                isLocked = false;
-                updateLockButton();
+                runOnUiThread(() -> {
+                    isLocked = false;
+                    updateLockButton();
+                });
             }
         } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
             tiltCompensator.updateGyroscope(event);
@@ -881,8 +953,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         stats.add(filteredDistance);
 
-        // Update display
-        updateDisplay(filteredDistance);
+        final float dist = filteredDistance;
+        runOnUiThread(() -> updateDisplay(dist));
 
         // Continuous CSV recording
         if (continuousMode && isRecording) {
