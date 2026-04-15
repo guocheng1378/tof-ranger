@@ -70,10 +70,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     private static final int C_ACCENT_LIGHT    = 0xFF007AFF; // blue
     private static final int C_ACCENT2_LIGHT   = 0xFF34C759; // green
     private static final int C_ACCENT3_LIGHT   = 0xFFFF9500; // orange
-    private static final int C_TEXT_LIGHT      = 0xFF1C1C1E;
-    private static final int C_TEXT_DIM_LIGHT  = 0x991C1C1E;
-    private static final int C_GLASS_BG_LIGHT  = 0xCCFFFFFF;
-    private static final int C_GLASS_EDGE_LIGHT= 0x44000000;
+    private static final int C_TEXT_LIGHT      = 0xFF000000;
+    private static final int C_TEXT_DIM_LIGHT  = 0xFF636366;
+    private static final int C_GLASS_BG_LIGHT  = 0xF0FFFFFF;
+    private static final int C_GLASS_EDGE_LIGHT= 0x66000000;
     private static final int C_GLASS_SHINE_LIGHT= 0x15FFFFFF;
     private static final int C_BAR_BG_LIGHT    = 0xCCF2F2F7;
     private static final int C_MORE_BG_LIGHT   = 0xEEFFFFFF;
@@ -196,8 +196,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             edgePaint.setColor(C_GLASS_EDGE);
             edgePaint.setStyle(Paint.Style.STROKE);
             edgePaint.setStrokeWidth(1.2f);
-            // Remove BlurMaskFilter + software layer: use elevation shadow instead
             tintPaint.setStyle(Paint.Style.FILL);
+            // Elevation shadow for light theme visibility
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                setElevation(dp(6));
+            }
         }
 
         public void setAccentTint(int color) {
@@ -272,7 +275,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (accentTint != 0) {
                 float edgeH = 3.5f;
                 bottomEdge.set(rect.left, rect.bottom - edgeH, rect.right, rect.bottom);
-                tintPaint.setColor(accentTint & 0x30FFFFFF);
+                tintPaint.setColor(accentTint & 0x80FFFFFF);
                 canvas.drawRoundRect(bottomEdge, r, r, tintPaint);
             }
         }
@@ -365,7 +368,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             iconPaint.setStrokeWidth(strokeW);
 
             // Active/inactive color
-            int iconColor = active ? accentColor : (isLightTheme ? 0xFF8E8E93 : 0xFF8E8E93);
+            int inactiveColor = isLightTheme ? 0xFF636366 : 0xFF8E8E93;
+            int iconColor = active ? accentColor : inactiveColor;
             iconPaint.setColor(iconColor);
 
             // Icon center Y (shifted up to make room for label)
@@ -602,7 +606,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         public QualityBarView(Context ctx) {
             super(ctx);
-            bgPaint.setColor(isLightTheme ? 0x1A000000 : 0x1AFFFFFF);
+            bgPaint.setColor(isLightTheme ? 0x33000000 : 0x1AFFFFFF);
             bgPaint.setStyle(Paint.Style.FILL);
             fillPaint.setStyle(Paint.Style.FILL);
             fillColor = C_ACCENT2;
@@ -1023,7 +1027,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             // Layer 1: Frosted base
             if (isLightTheme) {
-                basePaint.setColor(0xE8FFFFFF);
+                basePaint.setColor(0xF5FFFFFF);
             } else {
                 basePaint.setColor(0xE82C2C2E);
             }
@@ -1031,7 +1035,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             // Layer 2: Top specular highlight (liquid glass shine)
             float specH = h * 0.45f;
-            int specTop = isLightTheme ? 0x30FFFFFF : 0x20FFFFFF;
+            int specTop = isLightTheme ? 0x50FFFFFF : 0x20FFFFFF;
             specPaint.setShader(new LinearGradient(
                     0, 0, 0, specH,
                     new int[]{specTop, 0x00000000},
@@ -1048,12 +1052,12 @@ public class MainActivity extends Activity implements SensorEventListener {
             canvas.drawRoundRect(barRect, cr, cr, rimPaint);
 
             // Layer 4: Edge rim light
-            edgePaint.setColor(isLightTheme ? 0x40000000 : 0x30FFFFFF);
+            edgePaint.setColor(isLightTheme ? 0x60000000 : 0x30FFFFFF);
             canvas.drawRoundRect(barRect, cr, cr, edgePaint);
 
             // Layer 5: Inner top glow (subtle warm light from above)
             float innerH = 2f;
-            int innerC = isLightTheme ? 0x20FFFFFF : 0x15FFFFFF;
+            int innerC = isLightTheme ? 0x30FFFFFF : 0x15FFFFFF;
             innerGlowPaint.setShader(new LinearGradient(
                     0, 0, 0, innerH,
                     new int[]{innerC, 0x00000000},
