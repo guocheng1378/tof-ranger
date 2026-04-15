@@ -96,10 +96,11 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     // ── State ──
     private volatile float currentDistance = -1;
+    private float smoothDisplay = -1; // smoothed display value
     private volatile float filteredDistance = -1;
     private boolean isLocked = false;
     private boolean isPaused = false;
-    private boolean isMm = true; // true=mm, false=inch
+    private int unitMode = 0; // 0=cm, 1=mm, 2=inch
     private boolean moreExpanded = false;
     private boolean debugVisible = false;
     private boolean continuousMode = false;
@@ -252,7 +253,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             glowPaint.setStrokeWidth(2f);
             glowPaint.setMaskFilter(new BlurMaskFilter(8f, BlurMaskFilter.Blur.SOLID));
             textPaint.setColor(C_TEXT);
-            textPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+            textPaint.setTypeface(Typeface.DEFAULT);
             textPaint.setTextAlign(Paint.Align.CENTER);
             textPaint.setAntiAlias(true);
             reflectionPaint.setStyle(Paint.Style.FILL);
@@ -459,20 +460,22 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            isLocked = !isLocked;
-            updateLockButton();
-            vibrate(50);
-            return true;
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP) {
+                isLocked = !isLocked;
+                updateLockButton();
+                vibrate(50);
+                return true;
+            }
+            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                moreExpanded = !moreExpanded;
+                updateMorePanel();
+                vibrate(30);
+                return true;
+            }
         }
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            moreExpanded = !moreExpanded;
-            updateMorePanel();
-            vibrate(30);
-            return true;
-        }
-        return super.onKeyDown(keyCode, event);
+        return super.dispatchKeyEvent(event);
     }
 
     // ─────────────────────────────────────────────
@@ -536,14 +539,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         valueText = new TextView(this);
         valueText.setText("—");
         valueText.setTextColor(C_TEXT);
-        valueText.setTextSize(64);
+        valueText.setTextSize(72);
         valueText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         valueText.setGravity(Gravity.CENTER);
         cardInner.addView(valueText);
 
         // Unit label
         unitText = new TextView(this);
-        unitText.setText("mm");
+        unitText.setText("cm");
         unitText.setTextColor(C_ACCENT);
         unitText.setTextSize(20);
         unitText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
@@ -628,14 +631,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
 
         int btnSize = dp(56);
-        lockBtn = makeRoundButton("🔒", C_ACCENT);
+        lockBtn = makeRoundButton("L", C_ACCENT);
         lockBtn.setOnPress(() -> {
             isLocked = !isLocked;
             updateLockButton();
             vibrate(30);
         });
 
-        pauseBtn = makeRoundButton("⏸", C_ACCENT2);
+        pauseBtn = makeRoundButton("P", C_ACCENT2);
         pauseBtn.setOnPress(() -> {
             isPaused = !isPaused;
             updatePauseButton();
@@ -643,14 +646,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         });
 
 
-        unitBtn = makeRoundButton("mm", C_ACCENT3);
+        unitBtn = makeRoundButton("cm", C_ACCENT3);
         unitBtn.setOnPress(() -> {
-            isMm = !isMm;
+            unitMode = (unitMode + 1) % 3;
             updateUnitDisplay();
             vibrate(30);
         });
 
-        themeBtn = makeRoundButton(isLightTheme ? "🌙" : "☀️", C_TEXT_DIM);
+        themeBtn = makeRoundButton(isLightTheme ? "N" : "D", C_TEXT_DIM);
         themeBtn.setOnPress(() -> {
             isLightTheme = !isLightTheme;
             applyTheme(isLightTheme);
@@ -756,18 +759,20 @@ public class MainActivity extends Activity implements SensorEventListener {
     //  UI Updates
     // ─────────────────────────────────────────────
 
+    private static final String[] UNIT_LABELS = {"cm", "mm", "in"};
+
     private void updateLockButton() {
-        lockBtn.setLabel(isLocked ? "🔓" : "🔒");
+        lockBtn.setLabel(isLocked ? "U" : "L");
         lockBtn.setAccentColor(isLocked ? 0xFFFF453A : C_ACCENT);
         distanceCard.setAccentTint(isLocked ? 0xFFFF453A : C_ACCENT);
     }
 
     private void updatePauseButton() {
-        pauseBtn.setLabel(isPaused ? "▶" : "⏸");
+        pauseBtn.setLabel(isPaused ? "R" : "P");
     }
 
     private void updateUnitDisplay() {
-        unitBtn.setLabel(isMm ? "mm" : "in");
+        unitBtn.setLabel(UNIT_LABELS[unitMode]);
     }
 
     private void updateMorePanel() {
@@ -791,20 +796,39 @@ public class MainActivity extends Activity implements SensorEventListener {
     private void updateDisplay(float distMm) {
         if (isLocked) return;
 
-        float displayDist = distMm;
-        String unit = "mm";
+        // Exponential smoothing to reduce display jitter
+        if (smoothDisplay < 0) {
+            smoothDisplay = distMm;
+        } else {
+            smoothDisplay = smoothDisplay * 0.6f + distMm * 0.4f;
+        }
 
-        if (!isMm) {
-            displayDist = distMm / 25.4f;
-            unit = "in";
+        float src = smoothDisplay;
+        float displayDist;
+        String unit;
+
+        switch (unitMode) {
+            case 0: // cm
+                displayDist = src / 10f;
+                unit = "cm";
+                break;
+            case 1: // mm
+                displayDist = src;
+                unit = "mm";
+                break;
+            case 2: // inch
+                displayDist = src / 25.4f;
+                unit = "in";
+                break;
+            default:
+                displayDist = src / 10f;
+                unit = "cm";
         }
 
         // Format value
         String valueStr;
         if (displayDist < 0) {
             valueStr = "—";
-        } else if (displayDist >= 1000 || (!isMm && displayDist >= 39.37f)) {
-            valueStr = String.format(Locale.US, "%.2f", displayDist);
         } else {
             valueStr = String.format(Locale.US, "%.1f", displayDist);
         }
@@ -829,8 +853,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         // Status line
         String tiltInfo = tiltCompensator.getTiltQuality();
-        String shakeInfo = shakeDetector.isShaking() ? " | 手抖" : "";
-        String lockInfo = isLocked ? " | 🔒" : "";
+        String shakeInfo = shakeDetector.isShaking() ? " 手抖" : "";
+        String lockInfo = isLocked ? " 锁定" : "";
         statusText.setText(tiltInfo + shakeInfo + lockInfo);
 
         // Debug info
@@ -848,12 +872,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     private void updateStatsRow() {
-        float scale = isMm ? 1f : 1f / 25.4f;
-        String fmt = isMm ? "%s: %.1f" : "%s: %.2f";
-        if (statMinText != null) statMinText.setText(String.format(Locale.US, fmt, "min", stats.getMin() * scale));
-        if (statMaxText != null) statMaxText.setText(String.format(Locale.US, fmt, "max", stats.getMax() * scale));
-        if (statAvgText != null) statAvgText.setText(String.format(Locale.US, fmt, "avg", stats.getAvg() * scale));
-        if (statStdText != null) statStdText.setText(String.format(Locale.US, fmt, "σ", stats.getStdDev() * scale));
+        float scale;
+        switch (unitMode) {
+            case 0: scale = 0.1f; break;
+            case 1: scale = 1f; break;
+            case 2: scale = 1f / 25.4f; break;
+            default: scale = 0.1f;
+        }
+        if (statMinText != null) statMinText.setText(String.format(Locale.US, "%s: %.1f", "min", stats.getMin() * scale));
+        if (statMaxText != null) statMaxText.setText(String.format(Locale.US, "%s: %.1f", "max", stats.getMax() * scale));
+        if (statAvgText != null) statAvgText.setText(String.format(Locale.US, "%s: %.1f", "avg", stats.getAvg() * scale));
+        if (statStdText != null) statStdText.setText(String.format(Locale.US, "%s: %.1f", "\u03c3", stats.getStdDev() * scale));
     }
 
     // ─────────────────────────────────────────────
@@ -986,6 +1015,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         continuousBtn.setLabel("连续测量");
         currentDistance = -1;
         filteredDistance = -1;
+        smoothDisplay = -1;
         valueText.setText("—");
         qualityBar.setProgress(0);
         statusText.setText("已重置");
