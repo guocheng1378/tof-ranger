@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'com.example.tofranger'
-    compileSdk 35
+    compileSdk 34
 
     defaultConfig {
         applicationId "com.example.tofranger"
