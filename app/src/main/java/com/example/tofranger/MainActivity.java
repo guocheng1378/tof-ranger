@@ -1079,12 +1079,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             floatContainer.setElevation(dp(16));
         }
 
-        // Use a FrameLayout to layer the glass background behind the buttons
-        FrameLayout barFrame = new FrameLayout(this);
-
-        // Glass background layer
+        // Glass background layer — set as foreground/background on container directly
+        // to avoid MATCH_PARENT height bug in nested FrameLayout
         GlassBarView glassBg = new GlassBarView(this);
-        barFrame.addView(glassBg, new FrameLayout.LayoutParams(
+        floatContainer.addView(glassBg, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // Button row on top of glass
@@ -1149,10 +1147,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         buttonRow.addView(unitBtn, btnLp);
         buttonRow.addView(moreBtn, btnLp);
 
-        barFrame.addView(buttonRow, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        floatContainer.addView(barFrame, new FrameLayout.LayoutParams(
+        // Add button row directly to float container (no intermediate barFrame)
+        floatContainer.addView(buttonRow, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         bottomBarFloat = floatContainer;
