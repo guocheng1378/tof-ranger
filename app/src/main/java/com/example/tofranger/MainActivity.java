@@ -92,7 +92,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private boolean sensorRegistered = false;
 
     // ── State ──
-    private float currentDistance = -1;
+    private volatile float currentDistance = -1;
     private volatile float filteredDistance = -1;
     private boolean isLocked = false;
     private boolean isPaused = false;
@@ -110,7 +110,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     private final Runnable uiUpdateRunnable = () -> {
         uiUpdatePending = false;
         lastUiUpdateMs = System.currentTimeMillis();
-        if (filteredDistance >= 0) updateDisplay(filteredDistance);
+        // Display raw value so proximity sensor changes are immediately visible
+        updateDisplay(currentDistance);
     };
 
     // ── Filter & Stats ──
@@ -792,7 +793,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         themeBtn.setLabel(isLightTheme ? "🌙 深色主题" : "☀️ 浅色主题");
         themeBtn.setAccentColor(C_TEXT_DIM);
         // Restore state display
-        if (filteredDistance >= 0) updateDisplay(filteredDistance);
+        if (currentDistance >= 0) updateDisplay(currentDistance);
         updateLockButton();
         updatePauseButton();
         updateUnitDisplay();
@@ -881,6 +882,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             return;
         }
 
+        // Show sensor info so user knows what type they have
+        float maxRange = tofSensor.getMaximumRange();
+        statusText.setText("传感器: " + tofSensor.getName() + " | 量程: " + maxRange + "mm");
+
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
     }
@@ -939,14 +944,11 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         if (isPaused) return;
 
-        // Apply filter
+        // Apply filter for stats/debug, but display raw value for responsiveness
         filteredDistance = filter.filter(rawMm);
-        if (filteredDistance < 0) return;
+        stats.add(filteredDistance >= 0 ? filteredDistance : rawMm);
 
-        stats.add(filteredDistance);
-
-        // Throttled UI update: post at most once per UI_UPDATE_INTERVAL_MS
-        // Latest filteredDistance is always stored; the Runnable reads it
+        // Always post UI update — show raw value so binary proximity sensors are visible
         long now = System.currentTimeMillis();
         if (!uiUpdatePending && (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS)) {
             uiUpdatePending = true;
