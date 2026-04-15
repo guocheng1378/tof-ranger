@@ -515,10 +515,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         slp.topMargin = dp(12);
         cardInner.addView(statusText, slp);
 
-        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         cardLp.setMargins(0, 0, 0, dp(24));
-        distanceCard.addView(cardInner, new FrameLayout.LayoutParams(
+        distanceCard.addView(cardInner, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         contentLayout.addView(distanceCard, cardLp);
     }
