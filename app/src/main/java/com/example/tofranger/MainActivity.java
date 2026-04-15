@@ -798,8 +798,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         rootLayout.addView(morePanel, moreLp);
 
         // Floating bottom bar
+        // Fixed height to prevent MATCH_PARENT child from inflating the container
+        int barHeight = dp(16) + dp(10) + dp(52) + dp(10); // 88dp total
         rootLayout.addView(bottomBarFloat, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT, barHeight,
                 Gravity.BOTTOM));
     }
 
@@ -1069,6 +1071,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private void buildBottomBar() {
         // ── Floating container with outer padding (the "float" effect) ──
+        // Height is fixed at 88dp when added to rootLayout to prevent MATCH_PARENT child overflow
         FrameLayout floatContainer = new FrameLayout(this);
         floatContainer.setPadding(dp(16), 0, dp(16), dp(16));
 
@@ -1079,8 +1082,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             floatContainer.setElevation(dp(16));
         }
 
-        // Glass background layer — set as foreground/background on container directly
-        // to avoid MATCH_PARENT height bug in nested FrameLayout
+        // Glass background layer — fills the fixed-height container
         GlassBarView glassBg = new GlassBarView(this);
         floatContainer.addView(glassBg, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
