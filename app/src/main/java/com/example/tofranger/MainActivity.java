@@ -609,24 +609,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         unregisterSensors();
     }
 
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_UP) {
-            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP) {
-                isLocked = !isLocked;
-                updateLockButton();
-                vibrate(50);
-                return true;
-            }
-            if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                moreExpanded = !moreExpanded;
-                updateMorePanel();
-                vibrate(30);
-                return true;
-            }
-        }
-        return super.dispatchKeyEvent(event);
-    }
+
 
     // ─────────────────────────────────────────────
     //  UI Building
@@ -651,8 +634,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         contentLayout.setPadding(dp(20), dp(48), dp(20), dp(120));
 
         buildDistanceCard();
-        buildStatusSection();
-        buildDebugSection();
 
         scrollView.addView(contentLayout, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
