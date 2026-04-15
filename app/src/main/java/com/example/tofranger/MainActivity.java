@@ -103,16 +103,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     private long lastContinuousCsv = 0;
     private static final long CONTINUOUS_CSV_INTERVAL_MS = 200;
 
-    // UI update throttle — coalesce rapid sensor events into one UI refresh
+    // UI update throttle
     private static final long UI_UPDATE_INTERVAL_MS = 50; // max 20 fps
     private long lastUiUpdateMs = 0;
-    private boolean uiUpdatePending = false;
-    private final Runnable uiUpdateRunnable = () -> {
-        uiUpdatePending = false;
-        lastUiUpdateMs = System.currentTimeMillis();
-        // Display raw value so proximity sensor changes are immediately visible
-        updateDisplay(currentDistance);
-    };
 
     // ── Filter & Stats ──
     private DistanceFilter filter;
@@ -923,10 +916,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             // Auto-unfreeze when shake stops
             if (wasShaking && !shakeDetector.isShaking() && isLocked) {
-                runOnUiThread(() -> {
-                    isLocked = false;
-                    updateLockButton();
-                });
+                isLocked = false;
+                updateLockButton();
             }
         } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
             tiltCompensator.updateGyroscope(event);
@@ -944,15 +935,15 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         if (isPaused) return;
 
-        // Apply filter for stats/debug, but display raw value for responsiveness
+        // Apply filter for stats/debug
         filteredDistance = filter.filter(rawMm);
         stats.add(filteredDistance >= 0 ? filteredDistance : rawMm);
 
-        // Always post UI update — show raw value so binary proximity sensors are visible
+        // Direct UI update (matching v1.1 behavior that worked)
         long now = System.currentTimeMillis();
-        if (!uiUpdatePending && (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS)) {
-            uiUpdatePending = true;
-            runOnUiThread(uiUpdateRunnable);
+        if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
+            lastUiUpdateMs = now;
+            updateDisplay(currentDistance);
         }
 
         // Continuous CSV recording
