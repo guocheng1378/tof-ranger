@@ -942,60 +942,18 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
         bottomBar.setClipChildren(false);
-        floatContainer.setClipChildren(false);
 
         // ── Apple Liquid Glass background ──
+        float cornerR = dp(28);
         GradientDrawable bg = new GradientDrawable();
         if (isLightTheme) {
-            bg.setColor(0xD9F2F2F7); // ~85% opacity
+            bg.setColor(0xD9F2F2F7);
         } else {
             bg.setColor(0xD92C2C2E);
         }
-        bg.setCornerRadius(dp(28));
+        bg.setCornerRadius(cornerR);
         bottomBar.setBackground(bg);
-        bottomBar.setPadding(dp(8), dp(8), dp(8), dp(8));
-
-        // ── Glass shine overlay (drawn on bottomBar) ──
-        View glassOverlay = new View(this) {
-            private final Paint shineP = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final Paint edgeP = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final Paint innerP = new Paint(Paint.ANTI_ALIAS_FLAG);
-            @Override
-            protected void onDraw(Canvas canvas) {
-                super.onDraw(canvas);
-                float w = getWidth();
-                float h = getHeight();
-                float r = dp(28);
-
-                // Top specular highlight
-                float specH = h * 0.45f;
-                int specTop = isLightTheme ? 0x1AFFFFFF : 0x18FFFFFF;
-                shineP.setShader(new LinearGradient(
-                        0, 0, 0, specH,
-                        new int[]{specTop, 0x00000000},
-                        null, Shader.TileMode.CLAMP));
-                canvas.drawRoundRect(0, 0, w, h, r, r, shineP);
-
-                // Rim light (top edge highlight)
-                edgeP.setColor(isLightTheme ? 0x44000000 : 0x33FFFFFF);
-                edgeP.setStyle(Paint.Style.STROKE);
-                edgeP.setStrokeWidth(1.2f);
-                canvas.drawRoundRect(0.6f, 0.6f, w - 0.6f, h - 0.6f, r, r, edgeP);
-
-                // Inner shadow at top
-                float innerH = 5f;
-                int innerC = isLightTheme ? 0x0F000000 : 0x18000000;
-                innerP.setShader(new LinearGradient(
-                        0, 0, 0, innerH,
-                        new int[]{innerC, 0x00000000},
-                        null, Shader.TileMode.CLAMP));
-                innerP.setStyle(Paint.Style.FILL);
-                canvas.drawRoundRect(new RectF(1, 1, w - 1, innerH), r, r, innerP);
-            }
-        };
-        glassOverlay.setWillNotDraw(false);
-        glassOverlay.setBackgroundColor(Color.TRANSPARENT);
-        glassOverlay.setLayerType(LAYER_TYPE_SOFTWARE, null);
+        bottomBar.setPadding(dp(12), dp(10), dp(12), dp(10));
 
         // ── Buttons ──
         int btnSize = dp(56);
@@ -1053,19 +1011,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         bottomBar.addView(unitBtn, btnLp);
         bottomBar.addView(moreBtn, btnLp);
 
-        // Compose: glass overlay behind, buttons on top
-        FrameLayout overlayContainer = new FrameLayout(this);
-        overlayContainer.addView(glassOverlay, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        overlayContainer.addView(bottomBar, new FrameLayout.LayoutParams(
+        floatContainer.addView(bottomBar, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        floatContainer.addView(overlayContainer, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        // Replace bottomBar reference for layout
-        bottomBar = new LinearLayout(this); // dummy, real layout is floatContainer
-        bottomBar.setVisibility(View.GONE); // hide dummy
 
         // Store floatContainer for use in buildUI
         bottomBarFloat = floatContainer;
@@ -1087,15 +1034,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         morePanel.setPadding(dp(16), dp(14), dp(16), dp(14));
         morePanel.setVisibility(View.GONE);
         morePanel.setClipChildren(false);
-
-        // Position above floating bar
-        FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) morePanel.getLayoutParams();
-        if (mlp == null) {
-            mlp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM);
-        }
-        mlp.bottomMargin = dp(88); // above floating bar
 
         int rowHeight = dp(44);
 
