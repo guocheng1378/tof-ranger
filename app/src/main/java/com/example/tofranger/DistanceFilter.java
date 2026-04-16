@@ -58,8 +58,8 @@ public class DistanceFilter {
             // 不再做95%截断，太激进了
         }
 
-        // Spike rejection — only if enabled (>0)
-        if (lastRaw > 0 && maxJumpMm > 0) {
+        // Spike rejection — only if enabled (>0), skip if lastRaw was sensor overflow
+        if (lastRaw > 0 && lastRaw < 8190f && maxJumpMm > 0) {
             if (Math.abs(rawMm - lastRaw) > maxJumpMm) {
                 return emaInitialized ? ema : lastRaw;
             }
