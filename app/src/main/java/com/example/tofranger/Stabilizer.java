@@ -28,8 +28,18 @@ public class Stabilizer {
      * @param isShaking current shake state
      * @return stabilized distance (or filteredMm if not shaking and no buffer)
      */
+    private int invalidCount = 0;
+    private static final int MAX_INVALID_BEFORE_SHOW_DASH = 8; // ~400ms at 50ms UI throttle
+
     public float update(float filteredMm, boolean isShaking) {
-        if (filteredMm < 0) return stabilizedValue >= 0 ? stabilizedValue : -1;
+        if (filteredMm < 0) {
+            invalidCount++;
+            if (invalidCount >= MAX_INVALID_BEFORE_SHOW_DASH) {
+                return -1; // force display "---"
+            }
+            return stabilizedValue >= 0 ? stabilizedValue : -1;
+        }
+        invalidCount = 0;
 
         // Shake just started → begin buffering
         if (isShaking && !wasShaking) {
@@ -50,6 +60,7 @@ public class Stabilizer {
         // Shake just ended → compute median from buffer
         if (wasShaking && !isShaking) {
             wasShaking = false;
+        invalidCount = 0;
             int count = bufferFull ? BUFFER_SIZE : bufferPos;
             if (count >= 3) {
                 System.arraycopy(buffer, 0, sortBuf, 0, count);
@@ -84,5 +95,6 @@ public class Stabilizer {
         bufferFull = false;
         stabilizedValue = -1;
         wasShaking = false;
+        invalidCount = 0;
     }
 }
