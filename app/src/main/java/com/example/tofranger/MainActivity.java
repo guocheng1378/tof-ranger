@@ -66,6 +66,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     private volatile float currentDistance = -1;
     private volatile float smoothDisplay = -1;
     private volatile float filteredDistance = -1;
+    private volatile float lastRawSensorValue = -1;
     private boolean isLocked = false;
     private boolean isPaused = false;
     private int unitMode = 0;
@@ -659,8 +660,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
         if (debugVisible) {
             debugText.setText(String.format(Locale.US,
-                    "原始: %.1f mm\n滤波: %.1f mm\n倾斜: %.1f°\n水平: %.1f mm\n采样: %d | Hz: %d\nσ: %.2f mm",
-                    currentDistance, filteredDistance,
+                    "传感器原始: %.1f mm [阈值:%.0f]\n范围过滤后: %.1f mm\n滤波: %.1f mm\n倾斜: %.1f°\n水平: %.1f mm\n采样: %d | Hz: %d\nσ: %.2f mm",
+                    lastRawSensorValue, MAX_VALID_RANGE_MM, currentDistance, filteredDistance,
                     tiltCompensator.getPitchDegrees(),
                     tiltCompensator.getHorizontalDistance(filteredDistance),
                     stats.getSampleCount(), stats.getActualHz(),
@@ -744,6 +745,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
     private void handleTofReading(float rawMm) {
+        lastRawSensorValue = rawMm; // debug: keep original sensor value
         // Discard out-of-range readings
         if (rawMm > MAX_VALID_RANGE_MM) {
             rawMm = -1;
