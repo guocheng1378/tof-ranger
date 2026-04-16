@@ -60,10 +60,11 @@ public class DistanceFilter {
 
         // Spike rejection — only if enabled (>0), skip if lastRaw was sensor overflow
         if (lastRaw > 0 && lastRaw < 8190f && maxJumpMm > 0) {
-            if (Math.abs(rawMm - lastRaw) > maxJumpMm) {
-                // Update lastRaw even on rejection so the threshold tracks actual sensor output.
-                lastRaw = rawMm;
-                return emaInitialized ? ema : -1;
+            float jump = rawMm - lastRaw;
+            if (Math.abs(jump) > maxJumpMm) {
+                // Cap the jump instead of rejecting entirely — prevents sudden EMA jumps
+                // when legitimate fast movement is partially rejected then accepted.
+                rawMm = lastRaw + Math.signum(jump) * maxJumpMm;
             }
         }
         lastRaw = rawMm;

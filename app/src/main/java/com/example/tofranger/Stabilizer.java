@@ -77,7 +77,8 @@ public class Stabilizer {
             stabilizedValue = filteredMm;
         } else {
             // Smooth convergence to filtered value
-            stabilizedValue = stabilizedValue * 0.7f + filteredMm * 0.3f;
+            // Higher alpha = more responsive (display layer handles final smoothing)
+            stabilizedValue = stabilizedValue * 0.5f + filteredMm * 0.5f;
         }
         return stabilizedValue;
     }

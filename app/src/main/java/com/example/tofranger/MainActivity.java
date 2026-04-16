@@ -64,7 +64,9 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     // ── State ──
     private volatile float currentDistance = -1;
+    // ── Display smoothing ──
     private volatile float smoothDisplay = -1;
+    private static final float DISPLAY_ALPHA = 0.15f;     // EMA smoothing (lower = smoother)
     private volatile float filteredDistance = -1;
     private volatile float lastRawSensorValue = -1;
     private boolean isLocked = false;
@@ -133,8 +135,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
         ThemeColors.apply(isLightTheme);
 
-        // Init helpers — tuned filter: window=7, alpha=0.25, maxJump=150mm, maxRange=4000mm
-        filter = new DistanceFilter(7, 0.25f, 150, MAX_VALID_RANGE_MM);
+        // Init helpers — tuned filter: window=7, alpha=0.25, maxJump=200mm, maxRange=4000mm
+        filter = new DistanceFilter(7, 0.25f, 200, MAX_VALID_RANGE_MM);
         stats = new DistanceStats(200);
         shakeDetector = new ShakeDetector();
         stabilizer = new Stabilizer();
@@ -628,8 +630,12 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     private void updateDisplay(float distMm) {
         if (isLocked) return;
 
-        if (smoothDisplay < 0) smoothDisplay = distMm;
-        else smoothDisplay = smoothDisplay * 0.6f + distMm * 0.4f;
+        // Smooth EMA toward target
+        if (smoothDisplay < 0) {
+            smoothDisplay = distMm;
+        } else {
+            smoothDisplay = smoothDisplay * (1f - DISPLAY_ALPHA) + distMm * DISPLAY_ALPHA;
+        }
 
         float src = smoothDisplay;
         float displayDist;
