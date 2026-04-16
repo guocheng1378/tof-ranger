@@ -654,9 +654,10 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
 
         String tiltInfo = tiltCompensator.getTiltQuality();
+        String rangeInfo = (currentDistance < 0) ? " 超量程" : "";
         String shakeInfo = shakeDetector.isShaking() ? " 防抖中(" + stabilizer.getBufferedCount() + ")" : "";
         String lockInfo = isLocked ? " 锁定" : "";
-        statusText.setText(tiltInfo + shakeInfo + lockInfo);
+        statusText.setText(tiltInfo + rangeInfo + shakeInfo + lockInfo);
 
         if (debugVisible) {
             debugText.setText(String.format(Locale.US,
@@ -784,7 +785,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         // Throttled UI update
         if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdateMs = now;
-            final float displayDist = stabilizer.update(filteredDistance >= 0 ? filteredDistance : currentDistance, shakeDetector.isShaking());
+            float stabInput = (rawMm < 0) ? -1 : (filteredDistance >= 0 ? filteredDistance : currentDistance);
+            final float displayDist = stabilizer.update(stabInput, shakeDetector.isShaking());
             mainHandler.post(() -> updateDisplay(displayDist));
         }
     }
