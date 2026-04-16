@@ -746,8 +746,12 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     private void handleTofReading(float rawMm) {
         lastRawSensorValue = rawMm; // debug: keep original sensor value
+        // Discard sensor overflow sentinel (VL53L1X returns 8191 = 2^13-1 when no target)
+        if (rawMm >= 8190f) {
+            rawMm = -1;
+        }
         // Discard out-of-range readings
-        if (rawMm > MAX_VALID_RANGE_MM) {
+        else if (rawMm > MAX_VALID_RANGE_MM) {
             rawMm = -1;
         }
         currentDistance = rawMm;
