@@ -54,7 +54,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     // ── Sensor ──
     private static final int SENSOR_TYPE_MIUI_TOF = 33171040;
-    private static final float MAX_VALID_RANGE_MM = 4000f;
+    private static final float DEFAULT_MAX_RANGE_MM = 4000f;
+    private float maxValidRangeMm = DEFAULT_MAX_RANGE_MM;
     private boolean isProximityFallback = false;
     private SensorManager sensorManager;
     private Sensor tofSensor;
@@ -66,7 +67,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     private volatile float currentDistance = -1;
     // ── Display smoothing ──
     private volatile float smoothDisplay = -1;
-    private static final float DISPLAY_ALPHA = 0.15f;     // EMA smoothing (lower = smoother)
+    private static final float DISPLAY_ALPHA = 0.25f;     // EMA smoothing — raised from 0.15 to reduce total pipeline lag
     private volatile float filteredDistance = -1;
     private volatile float lastRawSensorValue = -1;
     private boolean isLocked = false;
@@ -135,8 +136,12 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
         ThemeColors.apply(isLightTheme);
 
-        // Init helpers — tuned filter: window=7, alpha=0.25, maxJump=200mm, maxRange=4000mm
-        filter = new DistanceFilter(7, 0.25f, 200, MAX_VALID_RANGE_MM);
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        findTofSensor();
+
+        // Init helpers — tuned filter: window=7, adaptive alpha (0.15~0.40), maxJump=200mm
+        // maxRange auto-detected from sensor
+        filter = new DistanceFilter(7, 0.15f, 0.40f, 200, maxValidRangeMm);
         stats = new DistanceStats(200);
         shakeDetector = new ShakeDetector();
         stabilizer = new Stabilizer();
@@ -151,9 +156,6 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
             contentLayout.setPadding(dp(20), top + dp(16), dp(20), dp(120));
             return insets;
         });
-
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-        findTofSensor();
     }
 
     @Override
@@ -213,7 +215,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     private void recordSingleDataPoint() {
         float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
-        if (dist >= 0 && dist <= MAX_VALID_RANGE_MM) {
+        if (dist >= 0 && dist <= maxValidRangeMm) {
             csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees(), System.currentTimeMillis()});
             final int count = csvData.size();
             final String distStr = formatDistance(dist);
@@ -667,12 +669,15 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
         if (debugVisible) {
             debugText.setText(String.format(Locale.US,
-                    "传感器原始: %.1f mm [阈值:%.0f]\n范围过滤后: %.1f mm\n滤波: %.1f mm\n倾斜: %.1f°\n水平: %.1f mm\n采样: %d | Hz: %d\nσ: %.2f mm",
-                    lastRawSensorValue, MAX_VALID_RANGE_MM, currentDistance, filteredDistance,
+                    "传感器原始: %.1f mm [阈值:%.0f]\n范围过滤后: %.1f mm\n滤波: %.1f mm (α=%.3f)\n倾斜: %.1f° %s\n水平: %.1f mm\n采样: %d | Hz: %d | σ: %.2f mm\n陀螺校准: %s | %s",
+                    lastRawSensorValue, maxValidRangeMm, currentDistance, filteredDistance,
+                    filter.getCurrentAlpha(),
                     tiltCompensator.getPitchDegrees(),
+                    tiltCompensator.isStill() ? "(静止)" : "(移动)",
                     tiltCompensator.getHorizontalDistance(filteredDistance),
-                    stats.getSampleCount(), stats.getActualHz(),
-                    stats.getStdDev()));
+                    stats.getSampleCount(), stats.getActualHz(), stats.getStdDev(),
+                    tiltCompensator.isGyroCalibrated() ? "✓" : "校准中…",
+                    shakeDetector.isWarmedUp() ? "防抖就绪" : "防抖预热中"));
         }
     }
 
@@ -709,8 +714,17 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
             statusText.setText("未找到距离传感器");
             return;
         }
-        String label = isProximityFallback ? " (降级 Proximity)" : "";
-        statusText.setText("传感器: " + tofSensor.getName() + label + " | 量程: " + tofSensor.getMaximumRange());
+        String sensorName = tofSensor.getName();
+        float maxRange = tofSensor.getMaximumRange();
+        // Auto-detect overflow sentinel: VL53L1X=8191, VL53L5CX may use different value
+        // Use sensor's max range as fallback threshold
+        if (maxRange > 0 && maxRange < maxValidRangeMm) {
+            maxValidRangeMm = maxRange;
+        }
+        StringBuilder sb = new StringBuilder("传感器: ").append(sensorName);
+        if (isProximityFallback) sb.append(" (降级 Proximity)");
+        sb.append(" | 量程: ").append((int) maxRange).append("mm");
+        statusText.setText(sb.toString());
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
     }
@@ -759,7 +773,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
             rawMm = -1;
         }
         // Discard out-of-range readings
-        else if (rawMm > MAX_VALID_RANGE_MM) {
+        else if (rawMm > maxValidRangeMm) {
             rawMm = -1;
         }
         currentDistance = rawMm;
@@ -768,14 +782,17 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         if (isPaused) return;
 
         filteredDistance = filter.filter(rawMm);
-        stats.add(filteredDistance >= 0 ? filteredDistance : rawMm);
+        // Only add valid filtered values to stats — don't pollute with rejected raw readings
+        if (filteredDistance >= 0) {
+            stats.add(filteredDistance);
+        }
 
         long now = System.currentTimeMillis();
 
         // Continuous CSV recording with real timestamps
         if (continuousMode && isRecording) {
             if (now - lastContinuousCsv >= CONTINUOUS_CSV_INTERVAL_MS) {
-                if (filteredDistance >= 0 && filteredDistance <= MAX_VALID_RANGE_MM) {
+                if (filteredDistance >= 0 && filteredDistance <= maxValidRangeMm) {
                     csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees(), (float) now});
                 }
                 lastContinuousCsv = now;

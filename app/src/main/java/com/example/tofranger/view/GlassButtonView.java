@@ -28,12 +28,21 @@ public class GlassButtonView extends View {
     private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF();
+    private final RectF bgRect = new RectF();
+    private final RectF edgeRect = new RectF();
     private int iconType = 0;
     private String label = "";
     private int accentColor = ThemeColors.ACCENT;
     private boolean active = false;
     private boolean pressed = false;
     private Runnable onPress;
+
+    // Reusable Path objects to avoid per-frame allocation
+    private final Path reusablePath1 = new Path();
+    private final Path reusablePath2 = new Path();
+    private final RectF iconBodyRect = new RectF();
+    private final RectF iconAuxRect1 = new RectF();
+    private final RectF iconAuxRect2 = new RectF();
 
     public GlassButtonView(Context ctx) {
         super(ctx);
@@ -87,15 +96,15 @@ public class GlassButtonView extends View {
             default:
                 if (!label.isEmpty()) {
                     iconPaint.setStyle(Paint.Style.STROKE);
-                    RectF bgR = new RectF(4, 4, w - 4, h - 4);
+                    bgRect.set(4, 4, w - 4, h - 4);
                     int bgColor = Color.argb(0x15, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor));
                     iconPaint.setColor(bgColor);
                     iconPaint.setStyle(Paint.Style.FILL);
-                    canvas.drawRoundRect(bgR, dp(12), dp(12), iconPaint);
+                    canvas.drawRoundRect(bgRect, dp(12), dp(12), iconPaint);
                     iconPaint.setStyle(Paint.Style.STROKE);
                     iconPaint.setColor(Color.argb(0x30, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)));
-                    RectF edge = new RectF(bgR.left, bgR.bottom - dp(2), bgR.right, bgR.bottom);
-                    canvas.drawRoundRect(edge, dp(12), dp(12), iconPaint);
+                    edgeRect.set(bgRect.left, bgRect.bottom - dp(2), bgRect.right, bgRect.bottom);
+                    canvas.drawRoundRect(edgeRect, dp(12), dp(12), iconPaint);
                     labelPaint.setColor(ThemeColors.TEXT);
                     labelPaint.setTextSize(dp(13));
                     Paint.FontMetrics fm = labelPaint.getFontMetrics();
@@ -122,8 +131,8 @@ public class GlassButtonView extends View {
         float shackTop = bodyTop - shackH;
         if (active) c.drawArc(cx - shackW, shackTop, cx + shackW, bodyTop, 180, 180, false, iconPaint);
         else c.drawArc(cx - shackW, shackTop - s * 0.05f, cx + shackW + s * 0.08f, bodyTop, 200, 160, false, iconPaint);
-        RectF body = new RectF(cx - hw, bodyTop, cx + hw, bodyBot);
-        c.drawRoundRect(body, dp(3), dp(3), iconPaint);
+        iconBodyRect.set(cx - hw, bodyTop, cx + hw, bodyBot);
+        c.drawRoundRect(iconBodyRect, dp(3), dp(3), iconPaint);
         float kcx = cx, kcy = bodyTop + bh * 0.5f;
         c.drawCircle(kcx, kcy, s * 0.06f, iconPaint);
         c.drawLine(kcx, kcy + s * 0.06f, kcx, kcy + s * 0.15f, iconPaint);
@@ -132,25 +141,25 @@ public class GlassButtonView extends View {
     private void drawPauseIcon(Canvas c, float cx, float cy, float s) {
         if (active) {
             float sz = s * 0.35f;
-            Path tri = new Path();
-            tri.moveTo(cx - sz * 0.4f, cy - sz); tri.lineTo(cx - sz * 0.4f, cy + sz);
-            tri.lineTo(cx + sz * 0.7f, cy); tri.close();
-            iconPaint.setStyle(Paint.Style.FILL); c.drawPath(tri, iconPaint); iconPaint.setStyle(Paint.Style.STROKE);
+            reusablePath1.reset();
+            reusablePath1.moveTo(cx - sz * 0.4f, cy - sz); reusablePath1.lineTo(cx - sz * 0.4f, cy + sz);
+            reusablePath1.lineTo(cx + sz * 0.7f, cy); reusablePath1.close();
+            iconPaint.setStyle(Paint.Style.FILL); c.drawPath(reusablePath1, iconPaint); iconPaint.setStyle(Paint.Style.STROKE);
         } else {
             float bw = s * 0.12f, bh = s * 0.6f, gap = s * 0.18f;
-            RectF b1 = new RectF(cx - gap - bw, cy - bh / 2f, cx - gap, cy + bh / 2f);
-            RectF b2 = new RectF(cx + gap, cy - bh / 2f, cx + gap + bw, cy + bh / 2f);
+            iconAuxRect1.set(cx - gap - bw, cy - bh / 2f, cx - gap, cy + bh / 2f);
+            iconAuxRect2.set(cx + gap, cy - bh / 2f, cx + gap + bw, cy + bh / 2f);
             iconPaint.setStyle(Paint.Style.FILL);
-            c.drawRoundRect(b1, dp(2), dp(2), iconPaint);
-            c.drawRoundRect(b2, dp(2), dp(2), iconPaint);
+            c.drawRoundRect(iconAuxRect1, dp(2), dp(2), iconPaint);
+            c.drawRoundRect(iconAuxRect2, dp(2), dp(2), iconPaint);
             iconPaint.setStyle(Paint.Style.STROKE);
         }
     }
 
     private void drawRulerIcon(Canvas c, float cx, float cy, float s) {
         float hw = s * 0.45f, hh = s * 0.22f;
-        RectF body = new RectF(cx - hw, cy - hh, cx + hw, cy + hh);
-        c.drawRoundRect(body, dp(2), dp(2), iconPaint);
+        iconBodyRect.set(cx - hw, cy - hh, cx + hw, cy + hh);
+        c.drawRoundRect(iconBodyRect, dp(2), dp(2), iconPaint);
         float tickH = hh * 0.6f;
         for (int i = -2; i <= 2; i++) {
             float x = cx + i * (hw * 0.4f);
@@ -162,12 +171,13 @@ public class GlassButtonView extends View {
     private void drawThemeIcon(Canvas c, float cx, float cy, float s) {
         float r = s * 0.22f;
         if (active) {
-            Path moon = new Path(); float mr = r * 1.1f;
-            moon.addCircle(cx - mr * 0.3f, cy, mr, Path.Direction.CW);
-            Path cutout = new Path();
-            cutout.addCircle(cx + mr * 0.4f, cy - mr * 0.15f, mr * 0.75f, Path.Direction.CW);
-            moon.op(cutout, Path.Op.DIFFERENCE);
-            iconPaint.setStyle(Paint.Style.FILL); c.drawPath(moon, iconPaint); iconPaint.setStyle(Paint.Style.STROKE);
+            float mr = r * 1.1f;
+            reusablePath1.reset();
+            reusablePath1.addCircle(cx - mr * 0.3f, cy, mr, Path.Direction.CW);
+            reusablePath2.reset();
+            reusablePath2.addCircle(cx + mr * 0.4f, cy - mr * 0.15f, mr * 0.75f, Path.Direction.CW);
+            reusablePath1.op(reusablePath2, Path.Op.DIFFERENCE);
+            iconPaint.setStyle(Paint.Style.FILL); c.drawPath(reusablePath1, iconPaint); iconPaint.setStyle(Paint.Style.STROKE);
         } else {
             c.drawCircle(cx, cy, r, iconPaint);
             float rayLen = r * 0.5f, rayStart = r * 1.25f;

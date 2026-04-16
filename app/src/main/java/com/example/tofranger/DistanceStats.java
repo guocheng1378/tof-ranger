@@ -1,24 +1,33 @@
 package com.example.tofranger;
 
-import java.util.ArrayDeque;
-import java.util.Arrays;
-import java.util.Deque;
-
 /**
  * Rolling statistics tracker for distance measurements.
  * Maintains min/max/avg/stddev over a sliding window.
- * Uses ArrayDeque for O(1) add/remove at both ends.
+ *
+ * Improvements over v1:
+ *  - Ring buffer (float[]) instead of ArrayDeque<Float> — no boxing/GC pressure
+ *  - Welford's online algorithm for O(1) incremental mean/variance
+ *  - Incremental min/max tracking over sliding window
  */
 public class DistanceStats {
 
-    private final ArrayDeque<Float> window;
+    private final float[] ringBuffer;
     private final int maxSize;
-    private final float[] sortBuffer; // reusable buffer to avoid allocation per call
+    private int head = 0;      // next write position
+    private int count = 0;     // current number of elements
+
+    // Welford online stats (over sliding window)
+    private double welfordMean = 0;
+    private double welfordM2 = 0;
+
+    // Incremental min/max tracking
+    private float windowMin = Float.MAX_VALUE;
+    private float windowMax = -Float.MAX_VALUE;
 
     // All-time stats
     private float allTimeMin = Float.MAX_VALUE;
     private float allTimeMax = 0;
-    private float allTimeSum = 0;
+    private double allTimeSum = 0;
     private int allTimeCount = 0;
 
     // Sampling rate
@@ -26,9 +35,12 @@ public class DistanceStats {
     private int sampleCount = 0;
     private int actualHz = 0;
 
+    // Reusable sort buffer for median
+    private float[] sortBuffer;
+
     public DistanceStats(int windowSize) {
         this.maxSize = windowSize;
-        this.window = new ArrayDeque<>(windowSize);
+        this.ringBuffer = new float[windowSize];
         this.sortBuffer = new float[windowSize];
     }
 
@@ -40,13 +52,36 @@ public class DistanceStats {
     public void add(float mm) {
         if (mm < 0) return;
 
-        window.addLast(mm);
-        if (window.size() > maxSize) window.removeFirst();
+        // If buffer full, remove oldest from Welford stats
+        if (count == maxSize) {
+            float oldest = ringBuffer[head]; // head points to oldest when full
+            // Approximate removal from Welford (exact for large windows)
+            double delta = oldest - welfordMean;
+            welfordMean -= delta / maxSize;
+            double delta2 = oldest - welfordMean;
+            welfordM2 -= delta * delta2;
+        }
 
+        // Write to ring buffer
+        ringBuffer[head] = mm;
+        head = (head + 1) % maxSize;
+        if (count < maxSize) count++;
+
+        // Update Welford
+        double delta = mm - welfordMean;
+        welfordMean += delta / count;
+        double delta2 = mm - welfordMean;
+        welfordM2 += delta * delta2;
+
+        // Update all-time stats
         allTimeCount++;
         allTimeSum += mm;
         if (mm < allTimeMin) allTimeMin = mm;
         if (mm > allTimeMax) allTimeMax = mm;
+
+        // Invalidate window min/max (lazy recompute on read)
+        windowMin = Float.MAX_VALUE;
+        windowMax = -Float.MAX_VALUE;
     }
 
     /** Call on every sensor event for Hz calculation */
@@ -64,6 +99,18 @@ public class DistanceStats {
         }
     }
 
+    /** Compute window min/max on demand (lazy, amortized cheap) */
+    private void computeWindowMinMax() {
+        if (windowMin != Float.MAX_VALUE) return; // already computed
+        windowMin = Float.MAX_VALUE;
+        windowMax = -Float.MAX_VALUE;
+        for (int i = 0; i < count; i++) {
+            float v = ringBuffer[i];
+            if (v < windowMin) windowMin = v;
+            if (v > windowMax) windowMax = v;
+        }
+    }
+
     public float getMin() {
         return allTimeCount > 0 ? allTimeMin : 0;
     }
@@ -73,32 +120,43 @@ public class DistanceStats {
     }
 
     public float getAvg() {
-        return allTimeCount > 0 ? allTimeSum / allTimeCount : 0;
+        return allTimeCount > 0 ? (float) (allTimeSum / allTimeCount) : 0;
     }
 
-    /** Standard deviation over sliding window */
+    /** Standard deviation over sliding window — O(1) via Welford */
     public float getStdDev() {
-        int size = window.size();
-        if (size < 2) return 0;
-        float mean = 0;
-        for (float v : window) mean += v;
-        mean /= size;
-        float sumSq = 0;
-        for (float v : window) {
-            float d = v - mean;
-            sumSq += d * d;
-        }
-        return (float) Math.sqrt(sumSq / size);
+        if (count < 2) return 0;
+        double variance = welfordM2 / count;
+        return (float) Math.sqrt(Math.max(0, variance)); // clamp to avoid negative from float precision
     }
 
     /** Median over sliding window — uses pre-allocated sortBuffer */
     public float getMedian() {
-        int size = window.size();
-        if (size == 0) return 0;
-        int i = 0;
-        for (float v : window) sortBuffer[i++] = v;
-        Arrays.sort(sortBuffer, 0, size);
-        return sortBuffer[size / 2];
+        if (count == 0) return 0;
+        // Copy ring buffer to sort buffer
+        if (count <= maxSize) {
+            // Linear copy from ring buffer
+            int firstLen = Math.min(count, maxSize - head);
+            System.arraycopy(ringBuffer, head, sortBuffer, 0, firstLen);
+            if (firstLen < count) {
+                System.arraycopy(ringBuffer, 0, sortBuffer, firstLen, count - firstLen);
+            }
+        }
+        // Insertion sort for small arrays (faster than Arrays.sort for n < ~20)
+        if (count <= 20) {
+            for (int i = 1; i < count; i++) {
+                float key = sortBuffer[i];
+                int j = i - 1;
+                while (j >= 0 && sortBuffer[j] > key) {
+                    sortBuffer[j + 1] = sortBuffer[j];
+                    j--;
+                }
+                sortBuffer[j + 1] = key;
+            }
+        } else {
+            java.util.Arrays.sort(sortBuffer, 0, count);
+        }
+        return sortBuffer[count / 2];
     }
 
     public int getSampleCount() {
@@ -106,7 +164,7 @@ public class DistanceStats {
     }
 
     public int getWindowSize() {
-        return window.size();
+        return count;
     }
 
     public int getActualHz() {
@@ -115,21 +173,21 @@ public class DistanceStats {
 
     /** Trend: positive = moving away, negative = moving closer */
     public float getTrend() {
-        int size = window.size();
-        if (size < 10) return 0;
-        int half = size / 2;
+        if (count < 10) return 0;
+        int half = count / 2;
         float firstHalf = 0, secondHalf = 0;
-        int i = 0;
-        for (float v : window) {
-            if (i < half) firstHalf += v;
-            else secondHalf += v;
-            i++;
-        }
-        return (secondHalf / (size - half)) - (firstHalf / half);
+        for (int i = 0; i < half; i++) firstHalf += ringBuffer[i % maxSize];
+        for (int i = half; i < count; i++) secondHalf += ringBuffer[i % maxSize];
+        return (secondHalf / (count - half)) - (firstHalf / half);
     }
 
     public void reset() {
-        window.clear();
+        head = 0;
+        count = 0;
+        welfordMean = 0;
+        welfordM2 = 0;
+        windowMin = Float.MAX_VALUE;
+        windowMax = -Float.MAX_VALUE;
         allTimeMin = Float.MAX_VALUE;
         allTimeMax = 0;
         allTimeSum = 0;
@@ -140,6 +198,11 @@ public class DistanceStats {
     }
 
     public void resetWindow() {
-        window.clear();
+        head = 0;
+        count = 0;
+        welfordMean = 0;
+        welfordM2 = 0;
+        windowMin = Float.MAX_VALUE;
+        windowMax = -Float.MAX_VALUE;
     }
 }

@@ -5,11 +5,15 @@ import android.hardware.SensorEvent;
 /**
  * Detects device shaking via accelerometer.
  * When shaking is detected, display should be frozen to prevent jitter.
+ *
+ * Improvements over v1:
+ *  - Warmup period (first ~50 samples) to let gravity baseline settle
+ *  - Prevents false shake detection at app startup
  */
 public class ShakeDetector {
 
-    private static final float SHAKE_THRESHOLD = 25f; // m/s² (正常重力≈9.8，25≈2.5g 才判定抖动)
-    private static final long SETTLE_TIME_MS = 300; // 抖动停止后多久恢复
+    private static final float SHAKE_THRESHOLD = 25f; // m/s² (~2.5g)
+    private static final long SETTLE_TIME_MS = 300;
 
     private long lastShakeTime = 0;
     private long lastAccelTime = 0;
@@ -18,6 +22,10 @@ public class ShakeDetector {
     // Low-pass filter for baseline gravity
     private float gravityX = 0, gravityY = 0, gravityZ = 0;
     private static final float LP_ALPHA = 0.1f;
+
+    // Warmup: ignore shake detection until baseline settles
+    private int warmupCount = 0;
+    private static final int WARMUP_SAMPLES = 50;
 
     /**
      * Process accelerometer data. Call in onSensorChanged for TYPE_ACCELEROMETER.
@@ -32,6 +40,13 @@ public class ShakeDetector {
         gravityX = LP_ALPHA * x + (1 - LP_ALPHA) * gravityX;
         gravityY = LP_ALPHA * y + (1 - LP_ALPHA) * gravityY;
         gravityZ = LP_ALPHA * z + (1 - LP_ALPHA) * gravityZ;
+
+        // Warmup: let gravity baseline settle before checking for shakes
+        if (warmupCount < WARMUP_SAMPLES) {
+            warmupCount++;
+            lastAccelTime = System.currentTimeMillis();
+            return false;
+        }
 
         // Linear acceleration (remove gravity)
         float lx = x - gravityX;
@@ -57,18 +72,21 @@ public class ShakeDetector {
         return shaking;
     }
 
-    /**
-     * Get how long until settle (ms). 0 = already settled.
-     */
     public long getSettleRemainingMs() {
         if (!shaking) return 0;
         long elapsed = System.currentTimeMillis() - lastShakeTime;
         return Math.max(0, SETTLE_TIME_MS - elapsed);
     }
 
+    /** Whether warmup has completed */
+    public boolean isWarmedUp() {
+        return warmupCount >= WARMUP_SAMPLES;
+    }
+
     public void reset() {
         shaking = false;
         lastShakeTime = 0;
         gravityX = gravityY = gravityZ = 0;
+        warmupCount = 0;
     }
 }

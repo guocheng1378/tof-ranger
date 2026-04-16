@@ -21,6 +21,7 @@ public class GlassBarView extends View {
     private final Paint edgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint innerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF barRect = new RectF();
+    private final RectF innerGlowRect = new RectF();
     private float cr;
     private int cachedW = -1, cachedH = -1;
 
@@ -89,7 +90,8 @@ public class GlassBarView extends View {
 
         // Layer 5: Inner top glow
         innerGlowPaint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(new RectF(1, 1, w - 1, 2f), cr, cr, innerGlowPaint);
+        innerGlowRect.set(1, 1, w - 1, 2f);
+        canvas.drawRoundRect(innerGlowRect, cr, cr, innerGlowPaint);
     }
 
     private static int dp(Context ctx, float v) {

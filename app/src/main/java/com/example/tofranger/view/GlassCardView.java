@@ -19,6 +19,7 @@ public class GlassCardView extends FrameLayout {
     private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint edgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF innerShadowRect = new RectF();
     private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -28,6 +29,7 @@ public class GlassCardView extends FrameLayout {
     private int accentTint = 0;
     private float lastW = -1, lastH = -1;
     private boolean dirty = true;
+    private boolean lastThemeLight = true;
 
     public GlassCardView(Context ctx) {
         super(ctx);
@@ -63,12 +65,12 @@ public class GlassCardView extends FrameLayout {
     private void rebuildGradientsIfNeeded() {
         float w = getWidth();
         float h = getHeight();
-        if (!dirty && w == lastW && h == lastH) return;
-        lastW = w; lastH = h; dirty = false;
+        boolean light = ThemeColors.isLight;
+        if (!dirty && w == lastW && h == lastH && light == lastThemeLight) return;
+        lastW = w; lastH = h; dirty = false; lastThemeLight = light;
         float specH = h * 0.35f;
         float rimH = h * 0.25f;
         float inset = 5f;
-        boolean light = ThemeColors.isLight;
         int specTopC = light ? 0x1A000000 : 0x22FFFFFF;
         shinePaint.setShader(new LinearGradient(
                 inset, inset, inset, inset + specH,
@@ -77,6 +79,13 @@ public class GlassCardView extends FrameLayout {
         rimPaint.setShader(new LinearGradient(
                 inset, h - inset - rimH, inset, h - inset,
                 new int[]{0x00000000, rimBotC}, null, Shader.TileMode.CLAMP));
+        // Cache inner shadow shader too
+        float innerShadowH = 6f;
+        int innerShadowC = light ? 0x0D000000 : 0x15000000;
+        innerShadowPaint.setShader(new LinearGradient(
+                inset, inset, inset, inset + innerShadowH,
+                new int[]{innerShadowC, 0x00000000}, null, Shader.TileMode.CLAMP));
+        innerShadowPaint.setStyle(Paint.Style.FILL);
     }
 
     @Override
@@ -92,16 +101,10 @@ public class GlassCardView extends FrameLayout {
         canvas.drawRoundRect(rect, r, r, rimPaint);
         canvas.drawRoundRect(rect, r, r, edgePaint);
 
+        // Inner shadow (cached in rebuildGradientsIfNeeded)
         float innerShadowH = 6f;
-        boolean light = ThemeColors.isLight;
-        int innerShadowC = light ? 0x0D000000 : 0x15000000;
-        innerShadowPaint.setShader(new LinearGradient(
-                rect.left, rect.top, rect.left, rect.top + innerShadowH,
-                new int[]{innerShadowC, 0x00000000}, null, Shader.TileMode.CLAMP));
-        innerShadowPaint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(
-                new RectF(rect.left, rect.top, rect.right, rect.top + innerShadowH),
-                r, r, innerShadowPaint);
+        innerShadowRect.set(rect.left, rect.top, rect.right, rect.top + innerShadowH);
+        canvas.drawRoundRect(innerShadowRect, r, r, innerShadowPaint);
 
         if (accentTint != 0) {
             float edgeH = 3.5f;
