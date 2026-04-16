@@ -132,7 +132,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
         ThemeColors.apply(isLightTheme);
 
-        // Init helpers — tuned filter: window=7, alpha=0.25, maxJump=150mm, maxRange=8000mm
+        // Init helpers — tuned filter: window=7, alpha=0.25, maxJump=150mm, maxRange=4000mm
         filter = new DistanceFilter(7, 0.25f, 150, MAX_VALID_RANGE_MM);
         stats = new DistanceStats(200);
         shakeDetector = new ShakeDetector();
