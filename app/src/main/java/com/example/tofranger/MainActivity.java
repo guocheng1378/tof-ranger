@@ -72,7 +72,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     private int unitMode = 0;
     private boolean moreExpanded = false;
     private boolean debugVisible = false;
-    private boolean continuousMode = false;
+    private volatile boolean continuousMode = false;
     private long lastContinuousCsv = 0;
     private static final long CONTINUOUS_CSV_INTERVAL_MS = 200;
     private static final long UI_UPDATE_INTERVAL_MS = 50;
@@ -87,7 +87,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     // ── CSV (thread-safe) ──
     private final CopyOnWriteArrayList<float[]> csvData = new CopyOnWriteArrayList<>();
-    private boolean isRecording = false;
+    private volatile boolean isRecording = false;
     private long recordStartTime = 0;
 
     // ── UI ──
@@ -746,6 +746,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
     private void handleTofReading(float rawMm) {
+        if (!sensorRegistered) return; // Guard: ignore callbacks after Activity destruction
         lastRawSensorValue = rawMm; // debug: keep original sensor value
         // Discard sensor overflow sentinel (VL53L1X returns 8191 = 2^13-1 when no target)
         if (rawMm >= 8190f) {
