@@ -11,7 +11,7 @@ import android.view.View;
 /**
  * Apple-style liquid glass bar background view.
  * Multi-layer: frosted base → top specular → bottom glow → rim light.
- * Gradients are cached in onSizeChanged to avoid per-frame allocation.
+ * Gradients cached in onSizeChanged. RectF pre-allocated.
  */
 public class GlassBarView extends View {
 
@@ -20,14 +20,18 @@ public class GlassBarView extends View {
     private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint edgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint innerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    // Pre-allocated
     private final RectF barRect = new RectF();
+    private final RectF innerRect = new RectF();
+
     private float cr;
     private int cachedW = -1, cachedH = -1;
 
     public GlassBarView(Context ctx) {
         super(ctx);
         setWillNotDraw(false);
-        cr = dp(ctx, 28);
+        cr = ThemeColors.dp(28);
         edgePaint.setStyle(Paint.Style.STROKE);
         edgePaint.setStrokeWidth(1f);
     }
@@ -73,26 +77,15 @@ public class GlassBarView extends View {
         float h = getHeight();
         barRect.set(0, 0, w, h);
 
-        // Layer 1: Frosted base
         basePaint.setColor(light ? 0xF5FFFFFF : 0xE82C2C2E);
         canvas.drawRoundRect(barRect, cr, cr, basePaint);
-
-        // Layer 2: Top specular
         canvas.drawRoundRect(barRect, cr, cr, specPaint);
-
-        // Layer 3: Bottom glow
         canvas.drawRoundRect(barRect, cr, cr, rimPaint);
-
-        // Layer 4: Edge rim light
         edgePaint.setColor(light ? 0x60000000 : 0x30FFFFFF);
         canvas.drawRoundRect(barRect, cr, cr, edgePaint);
 
-        // Layer 5: Inner top glow
         innerGlowPaint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(new RectF(1, 1, w - 1, 2f), cr, cr, innerGlowPaint);
-    }
-
-    private static int dp(Context ctx, float v) {
-        return (int) (v * ctx.getResources().getDisplayMetrics().density + 0.5f);
+        innerRect.set(1, 1, w - 1, 2f);
+        canvas.drawRoundRect(innerRect, cr, cr, innerGlowPaint);
     }
 }

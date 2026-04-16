@@ -8,6 +8,7 @@ import android.view.View;
 
 /**
  * Simple rounded progress bar showing measurement quality (0-100%).
+ * Pre-allocated RectFs to avoid GC in onDraw.
  */
 public class QualityBarView extends View {
 
@@ -50,9 +51,10 @@ public class QualityBarView extends View {
         super.onDraw(canvas);
         float h = getHeight();
         float r = h / 2f;
-        bgRect.set(0, 0, getWidth(), h);
+        float w = getWidth();
+        bgRect.set(0, 0, w, h);
         canvas.drawRoundRect(bgRect, r, r, bgPaint);
-        float fillW = getWidth() * progress;
+        float fillW = w * progress;
         if (fillW > r * 2) {
             fillRect.set(0, 0, fillW, h);
             fillPaint.setColor(fillColor);

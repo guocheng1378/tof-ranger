@@ -5,14 +5,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.VibrationEffect;
@@ -39,58 +34,39 @@ import com.example.tofranger.view.GlassCardView;
 import com.example.tofranger.view.QualityBarView;
 import com.example.tofranger.view.ThemeColors;
 
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.CopyOnWriteArrayList;
 
-public class MainActivity extends ComponentActivity implements SensorEventListener {
+/**
+ * Main Activity — UI shell that delegates to SensorController and DataRecorder.
+ *
+ * Refactored from 897-line God class:
+ * - Sensor logic → SensorController
+ * - CSV recording → DataRecorder
+ * - All view references + UI update logic stays here (it's the view layer)
+ */
+public class MainActivity extends ComponentActivity implements SensorController.ToFListener {
 
-    // ── Sensor ──
-    private static final int SENSOR_TYPE_MIUI_TOF = 33171040;
-    private static final float MAX_VALID_RANGE_MM = 4000f;
-    private boolean isProximityFallback = false;
-    private SensorManager sensorManager;
-    private Sensor tofSensor;
-    private Sensor accelSensor;
-    private Sensor gyroSensor;
-    private boolean sensorRegistered = false;
+    // ── Delegated concerns ──
+    private SensorController sensorCtrl;
+    private DataRecorder recorder;
 
     // ── State ──
     private volatile float currentDistance = -1;
-    // ── Display smoothing ──
-    private volatile float smoothDisplay = -1;
-    private static final float DISPLAY_ALPHA = 0.15f;     // EMA smoothing (lower = smoother)
     private volatile float filteredDistance = -1;
     private volatile float lastRawSensorValue = -1;
+    private volatile float smoothDisplay = -1;
+    private static final float DISPLAY_ALPHA = 0.15f;
     private boolean isLocked = false;
     private boolean isPaused = false;
     private int unitMode = 0;
     private boolean moreExpanded = false;
     private boolean debugVisible = false;
-    private volatile boolean continuousMode = false;
-    private long lastContinuousCsv = 0;
-    private static final long CONTINUOUS_CSV_INTERVAL_MS = 200;
+    private boolean isLightTheme = true;
+
+    // UI update throttle
     private static final long UI_UPDATE_INTERVAL_MS = 50;
     private long lastUiUpdateMs = 0;
-
-    // ── Filter & Stats ──
-    private DistanceFilter filter;
-    private DistanceStats stats;
-    private ShakeDetector shakeDetector;
-    private Stabilizer stabilizer;
-    private TiltCompensator tiltCompensator;
-
-    // ── CSV (thread-safe) ──
-    private final CopyOnWriteArrayList<float[]> csvData = new CopyOnWriteArrayList<>();
-    private volatile boolean isRecording = false;
-    private long recordStartTime = 0;
 
     // ── UI ──
     private FrameLayout rootLayout;
@@ -114,6 +90,12 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    // Pre-allocated StringBuilder for debug text (avoid String.format in hot path)
+    private final StringBuilder debugSb = new StringBuilder(256);
+
+    // ── Unit labels ──
+    private static final String[] UNIT_LABELS = {"cm", "mm", "in"};
+
     // ─────────────────────────────────────────────
     //  Lifecycle
     // ─────────────────────────────────────────────
@@ -121,9 +103,10 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        // Edge-to-edge
         EdgeToEdge.enable(this);
+
+        // Cache density globally for all views
+        ThemeColors.DENSITY = getResources().getDisplayMetrics().density;
 
         // Restore state
         if (savedInstanceState != null) {
@@ -135,25 +118,19 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
         ThemeColors.apply(isLightTheme);
 
-        // Init helpers — tuned filter: window=7, alpha=0.25, maxJump=200mm, maxRange=4000mm
-        filter = new DistanceFilter(7, 0.25f, 200, MAX_VALID_RANGE_MM);
-        stats = new DistanceStats(200);
-        shakeDetector = new ShakeDetector();
-        stabilizer = new Stabilizer();
-        tiltCompensator = new TiltCompensator();
+        // Initialize delegated controllers
+        sensorCtrl = new SensorController(this);
+        sensorCtrl.setListener(this);
+        recorder = new DataRecorder();
 
         buildUI();
         setContentView(rootLayout);
 
-        // Handle system insets
         ViewCompat.setOnApplyWindowInsetsListener(rootLayout, (v, insets) -> {
             int top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
             contentLayout.setPadding(dp(20), top + dp(16), dp(20), dp(120));
             return insets;
         });
-
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-        findTofSensor();
     }
 
     @Override
@@ -169,13 +146,13 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     @Override
     protected void onResume() {
         super.onResume();
-        registerSensors();
+        sensorCtrl.resume();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        unregisterSensors();
+        sensorCtrl.pause();
     }
 
     @Override
@@ -202,30 +179,67 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     }
 
     // ─────────────────────────────────────────────
-    //  Theme (static so extracted Views can read)
+    //  SensorController.ToFListener callback
     // ─────────────────────────────────────────────
 
-    private boolean isLightTheme = true;
+    @Override
+    public void onDistance(float distanceMm, float rawMm) {
+        lastRawSensorValue = rawMm;
+        currentDistance = distanceMm;
+
+        if (isPaused) return;
+
+        filteredDistance = sensorCtrl.getFilter().getCurrentValue();
+
+        // Continuous CSV recording
+        if (recorder.addContinuous(
+                filteredDistance >= 0 ? filteredDistance : distanceMm,
+                sensorCtrl.getTiltCompensator().getPitchDegrees())) {
+            final int count = recorder.getCount();
+            final long elapsed = recorder.getElapsedSeconds();
+            mainHandler.post(() -> updateRecordUI(count, elapsed, null));
+        }
+
+        // Throttled UI update
+        long now = System.currentTimeMillis();
+        if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
+            lastUiUpdateMs = now;
+            final float display = distanceMm;
+            mainHandler.post(() -> updateDisplay(display));
+        }
+    }
+
+    @Override
+    public void onSensorStatus(String status) {
+        mainHandler.post(() -> statusText.setText(status));
+    }
 
     // ─────────────────────────────────────────────
-    //  Data recording
+    //  Data Recording
     // ─────────────────────────────────────────────
 
     private void recordSingleDataPoint() {
         float dist = (filteredDistance >= 0) ? filteredDistance : currentDistance;
-        if (dist >= 0 && dist <= MAX_VALID_RANGE_MM) {
-            csvData.add(new float[]{dist, tiltCompensator.getPitchDegrees(), System.currentTimeMillis()});
-            final int count = csvData.size();
+        if (dist >= 0 && dist <= sensorCtrl.getMaxRange()) {
+            recorder.addPoint(dist, sensorCtrl.getTiltCompensator().getPitchDegrees());
+            final int count = recorder.getCount();
             final String distStr = formatDistance(dist);
-            mainHandler.post(() -> {
-                if (recordCountText != null) recordCountText.setText(count + " 条数据");
-                if (recordStatusText != null) {
-                    recordStatusText.setText("● 已记录");
-                    recordStatusText.setTextColor(ThemeColors.ACCENT);
-                }
-                if (recordDistText != null) recordDistText.setText("最近: " + distStr);
-            });
+            mainHandler.post(() -> updateRecordUI(count, -1, distStr));
             vibrate(50);
+        }
+    }
+
+    private void updateRecordUI(int count, long elapsedSec, String lastDist) {
+        if (recordCountText != null) recordCountText.setText(count + " 条数据");
+        if (elapsedSec >= 0 && recordTimeText != null && recorder.isRecording()) {
+            recordTimeText.setText(String.format(Locale.US, "已记录 %d:%02d", elapsedSec / 60, elapsedSec % 60));
+        }
+        if (lastDist != null) {
+            if (recordStatusText != null) {
+                recordStatusText.setText("● 已记录");
+                recordStatusText.setTextColor(ThemeColors.ACCENT);
+            }
+            if (recordDistText != null) recordDistText.setText("最近: " + lastDist);
         }
     }
 
@@ -237,12 +251,43 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
     }
 
+    private void exportCsv() {
+        recorder.exportCsv(this, new DataRecorder.ExportCallback() {
+            @Override
+            public void onSuccess(File file, String filename) {
+                mainHandler.post(() -> {
+                    statusText.setText("已导出: " + filename);
+                    vibrate(80);
+                    try {
+                        Uri contentUri = FileProvider.getUriForFile(MainActivity.this,
+                                getApplicationContext().getPackageName() + ".fileprovider", file);
+                        Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                        shareIntent.setType("text/csv");
+                        shareIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
+                        shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        startActivity(Intent.createChooser(shareIntent, "分享CSV"));
+                    } catch (ActivityNotFoundException | IllegalArgumentException ignored) {}
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                mainHandler.post(() -> statusText.setText(message));
+            }
+        });
+    }
+
     // ─────────────────────────────────────────────
     //  UI Building
     // ─────────────────────────────────────────────
 
-    private int dp(float v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    private int dp(float v) { return ThemeColors.dp(v); }
+
+    /** Create LinearLayout.LayoutParams with top margin. */
+    private LinearLayout.LayoutParams lpWithTopMargin(int w, int h, int topMargin) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h);
+        lp.topMargin = topMargin;
+        return lp;
     }
 
     private void buildUI() {
@@ -279,7 +324,6 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         moreLp.bottomMargin = dp(88);
         rootLayout.addView(morePanel, moreLp);
 
-        // Fixed height bar
         int barHeight = dp(16) + dp(10) + dp(52) + dp(10);
         rootLayout.addView(bottomBarFloat, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, barHeight, Gravity.BOTTOM));
@@ -308,10 +352,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         unitText.setTextSize(20);
         unitText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         unitText.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams unitLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        unitLp.topMargin = dp(4);
-        cardInner.addView(unitText, unitLp);
+        cardInner.addView(unitText, lpWithTopMargin(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, dp(4)));
 
         qualityBar = new QualityBarView(this);
         LinearLayout.LayoutParams qbLp = new LinearLayout.LayoutParams(dp(200), dp(6));
@@ -323,10 +365,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         statusText.setTextColor(ThemeColors.TEXT_DIM);
         statusText.setTextSize(13);
         statusText.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.topMargin = dp(12);
-        cardInner.addView(statusText, slp);
+        cardInner.addView(statusText, lpWithTopMargin(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, dp(12)));
 
         LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -387,8 +427,6 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         LinearLayout infoCol = new LinearLayout(this);
         infoCol.setOrientation(LinearLayout.VERTICAL);
         infoCol.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
 
         recordStatusText = new TextView(this);
         recordStatusText.setText("数据记录");
@@ -401,61 +439,51 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         recordCountText.setText("0 条数据");
         recordCountText.setTextColor(ThemeColors.TEXT_DIM);
         recordCountText.setTextSize(13);
-        LinearLayout.LayoutParams cntLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        cntLp.topMargin = dp(4);
-        infoCol.addView(recordCountText, cntLp);
+        infoCol.addView(recordCountText, lpWithTopMargin(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, dp(4)));
 
         recordTimeText = new TextView(this);
         recordTimeText.setText("0:00");
         recordTimeText.setTextColor(ThemeColors.TEXT_DIM);
         recordTimeText.setTextSize(12);
-        LinearLayout.LayoutParams timeLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        timeLp.topMargin = dp(2);
-        infoCol.addView(recordTimeText, timeLp);
+        infoCol.addView(recordTimeText, lpWithTopMargin(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, dp(2)));
 
         recordDistText = new TextView(this);
         recordDistText.setText("");
         recordDistText.setTextColor(ThemeColors.ACCENT);
         recordDistText.setTextSize(14);
         recordDistText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
-        LinearLayout.LayoutParams distLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        distLp.topMargin = dp(4);
-        infoCol.addView(recordDistText, distLp);
+        infoCol.addView(recordDistText, lpWithTopMargin(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, dp(4)));
 
-        inner.addView(infoCol, infoLp);
+        inner.addView(infoCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         recordBtn = new GlassButtonView(this);
         recordBtn.setIconType(GlassButtonView.ICON_RECORD);
-        recordBtn.setLabel(isRecording ? "停止" : "开始");
+        recordBtn.setLabel(recorder.isRecording() ? "停止" : "开始");
         recordBtn.setAccentColor(0xFFFF3B30);
-        recordBtn.setActive(isRecording);
+        recordBtn.setActive(recorder.isRecording());
         recordBtn.setOnPress(() -> {
-            isRecording = !isRecording;
-            if (isRecording) {
-                csvData.clear();
-                recordStartTime = System.currentTimeMillis();
+            if (!recorder.isRecording()) {
+                recorder.startRecording();
+                recorder.setContinuousMode(true);
                 recordBtn.setLabel("停止");
                 recordBtn.setActive(true);
                 recordStatusText.setText("● 记录中");
                 recordStatusText.setTextColor(0xFFFF3B30);
-                continuousMode = true;
                 recordSingleDataPoint();
             } else {
-                continuousMode = false;
+                recorder.stopRecording();
                 recordBtn.setLabel("开始");
                 recordBtn.setActive(false);
                 recordStatusText.setText("数据记录");
                 recordStatusText.setTextColor(ThemeColors.TEXT);
-                if (!csvData.isEmpty()) exportCsv();
+                exportCsv();
             }
             vibrate(50);
         });
-
-        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(dp(56), dp(52));
-        inner.addView(recordBtn, btnLp);
+        inner.addView(recordBtn, new LinearLayout.LayoutParams(dp(56), dp(52)));
 
         LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -484,8 +512,6 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         buttonRow.setGravity(Gravity.CENTER);
         buttonRow.setPadding(dp(12), dp(10), dp(12), dp(10));
 
-        int btnSize = dp(56);
-
         lockBtn = makeIconBtn(GlassButtonView.ICON_LOCK, "锁定", ThemeColors.ACCENT, () -> {
             isLocked = !isLocked; updateLockButton(); vibrate(30);
         });
@@ -502,7 +528,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         lockBtn.setActive(isLocked);
         pauseBtn.setActive(isPaused);
 
-        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(btnSize, dp(52));
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(dp(56), dp(52));
         btnLp.weight = 1;
         buttonRow.addView(lockBtn, btnLp);
         buttonRow.addView(pauseBtn, btnLp);
@@ -534,9 +560,8 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         morePanel.setPadding(dp(16), dp(14), dp(16), dp(14));
         morePanel.setVisibility(View.GONE);
 
-        int rowHeight = dp(44);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, rowHeight);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
         rowLp.setMargins(0, dp(4), 0, dp(4));
 
         resetBtn = makeFlatBtn("↺ 重置数据", 0xFFFF453A, () -> {
@@ -549,12 +574,13 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
             vibrate(30);
         });
         calibrateBtn = makeFlatBtn("校准倾斜", ThemeColors.ACCENT2, () -> {
-            tiltCompensator.calibrate(); vibrate(80); statusText.setText("已校准 ✓");
+            sensorCtrl.getTiltCompensator().calibrate(); vibrate(80); statusText.setText("已校准 ✓");
         });
         continuousBtn = makeFlatBtn("连续模式", 0xFFFF375F, () -> {
-            continuousMode = !continuousMode;
-            continuousBtn.setLabel(continuousMode ? "连续模式 ✓" : "连续模式");
-            if (continuousMode) isRecording = true;
+            boolean c = !recorder.isContinuousMode();
+            recorder.setContinuousMode(c);
+            continuousBtn.setLabel(c ? "连续模式 ✓" : "连续模式");
+            if (c) recorder.setRecording(true);
             vibrate(30);
         });
         themeBtn = makeFlatBtn(ThemeColors.isLight ? "🌙 深色模式" : "☀️ 浅色模式", ThemeColors.TEXT_DIM, () -> {
@@ -582,8 +608,6 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     // ─────────────────────────────────────────────
     //  UI Updates
     // ─────────────────────────────────────────────
-
-    private static final String[] UNIT_LABELS = {"cm", "mm", "in"};
 
     private void updateLockButton() {
         lockBtn.setActive(isLocked);
@@ -646,155 +670,43 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
             default: displayDist = src / 10f; unit = "cm"; break;
         }
 
-        valueText.setText(displayDist < 0 ? "—" : String.format(Locale.US, "%.1f", displayDist));
+        // Use integer formatting for cleaner display when possible
+        if (displayDist < 0) {
+            valueText.setText("—");
+        } else {
+            valueText.setText(String.format(Locale.US, "%.1f", displayDist));
+        }
         unitText.setText(unit);
 
+        // Quality bar
+        DistanceStats stats = sensorCtrl.getStats();
         float stddev = stats.getStdDev();
         float quality = stddev < 1 ? 1f : stddev < 5 ? 0.8f : stddev < 15 ? 0.5f : 0.2f;
         qualityBar.setProgress(quality);
         qualityBar.setFillColor(quality > 0.7f ? ThemeColors.ACCENT2 : quality > 0.4f ? ThemeColors.ACCENT3 : 0xFFFF453A);
 
-        if (statMinText != null && statMinText.getParent() != null
-                && ((View) statMinText.getParent()).getVisibility() == View.VISIBLE) {
-            updateStatsRow();
-        }
-
-        String tiltInfo = tiltCompensator.getTiltQuality();
+        // Status line
+        TiltCompensator tc = sensorCtrl.getTiltCompensator();
+        ShakeDetector sd = sensorCtrl.getShakeDetector();
+        Stabilizer st = sensorCtrl.getStabilizer();
+        String tiltInfo = tc.getTiltQuality();
         String rangeInfo = (currentDistance < 0) ? " 超量程" : "";
-        String shakeInfo = shakeDetector.isShaking() ? " 防抖中(" + stabilizer.getBufferedCount() + ")" : "";
+        String shakeInfo = sd.isShaking() ? " 防抖中(" + st.getBufferedCount() + ")" : "";
         String lockInfo = isLocked ? " 锁定" : "";
         statusText.setText(tiltInfo + rangeInfo + shakeInfo + lockInfo);
 
+        // Debug text (StringBuilder to avoid String.format GC)
         if (debugVisible) {
-            debugText.setText(String.format(Locale.US,
-                    "传感器原始: %.1f mm [阈值:%.0f]\n范围过滤后: %.1f mm\n滤波: %.1f mm\n倾斜: %.1f°\n水平: %.1f mm\n采样: %d | Hz: %d\nσ: %.2f mm",
-                    lastRawSensorValue, MAX_VALID_RANGE_MM, currentDistance, filteredDistance,
-                    tiltCompensator.getPitchDegrees(),
-                    tiltCompensator.getHorizontalDistance(filteredDistance),
-                    stats.getSampleCount(), stats.getActualHz(),
-                    stats.getStdDev()));
-        }
-    }
-
-    private void updateStatsRow() {
-        float scale = unitMode == 0 ? 0.1f : unitMode == 1 ? 1f : 1f / 25.4f;
-        if (statMinText != null) statMinText.setText(String.format(Locale.US, "min: %.1f", stats.getMin() * scale));
-        if (statMaxText != null) statMaxText.setText(String.format(Locale.US, "max: %.1f", stats.getMax() * scale));
-        if (statAvgText != null) statAvgText.setText(String.format(Locale.US, "avg: %.1f", stats.getAvg() * scale));
-        if (statStdText != null) statStdText.setText(String.format(Locale.US, "σ: %.1f", stats.getStdDev() * scale));
-    }
-
-    // ─────────────────────────────────────────────
-    //  Sensor Logic
-    // ─────────────────────────────────────────────
-
-    private void findTofSensor() {
-        if (sensorManager == null) return;
-        List<Sensor> all = sensorManager.getSensorList(Sensor.TYPE_ALL);
-        tofSensor = null;
-        isProximityFallback = false;
-        for (Sensor s : all) {
-            String n = s.getName().toLowerCase();
-            int type = s.getType();
-            if ((type == SENSOR_TYPE_MIUI_TOF || n.contains("tof") || n.contains("vl53")) && tofSensor == null) {
-                tofSensor = s;
-                break;
-            }
-        }
-        if (tofSensor == null) {
-            tofSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-            if (tofSensor != null) isProximityFallback = true;
-        }
-        if (tofSensor == null) {
-            statusText.setText("未找到距离传感器");
-            return;
-        }
-        String label = isProximityFallback ? " (降级 Proximity)" : "";
-        statusText.setText("传感器: " + tofSensor.getName() + label + " | 量程: " + tofSensor.getMaximumRange());
-        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-    }
-
-    private void registerSensors() {
-        if (sensorManager == null || sensorRegistered) return;
-        if (tofSensor != null) sensorManager.registerListener(this, tofSensor, SensorManager.SENSOR_DELAY_FASTEST);
-        if (accelSensor != null) sensorManager.registerListener(this, accelSensor, SensorManager.SENSOR_DELAY_GAME);
-        if (gyroSensor != null) sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME);
-        sensorRegistered = true;
-    }
-
-    private void unregisterSensors() {
-        if (sensorManager != null && sensorRegistered) {
-            sensorManager.unregisterListener(this);
-            sensorRegistered = false;
-        }
-    }
-
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        int sType = event.sensor.getType();
-        if (sType == SENSOR_TYPE_MIUI_TOF || sType == Sensor.TYPE_PROXIMITY) {
-            handleTofReading(event.values[0]);
-        } else if (sType == Sensor.TYPE_ACCELEROMETER) {
-            boolean wasShaking = shakeDetector.isShaking();
-            shakeDetector.update(event);
-            tiltCompensator.updateAccelerometer(event);
-            if (wasShaking && !shakeDetector.isShaking() && isLocked) {
-                isLocked = false;
-                mainHandler.post(() -> updateLockButton());
-            }
-        } else if (sType == Sensor.TYPE_GYROSCOPE) {
-            tiltCompensator.updateGyroscope(event);
-        }
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-
-    private void handleTofReading(float rawMm) {
-        if (!sensorRegistered) return; // Guard: ignore callbacks after Activity destruction
-        lastRawSensorValue = rawMm; // debug: keep original sensor value
-        // Discard sensor overflow sentinel (VL53L1X returns 8191 = 2^13-1 when no target)
-        if (rawMm >= 8190f) {
-            rawMm = -1;
-        }
-        // Discard out-of-range readings
-        else if (rawMm > MAX_VALID_RANGE_MM) {
-            rawMm = -1;
-        }
-        currentDistance = rawMm;
-        stats.tickHz();
-
-        if (isPaused) return;
-
-        filteredDistance = filter.filter(rawMm);
-        stats.add(filteredDistance >= 0 ? filteredDistance : rawMm);
-
-        long now = System.currentTimeMillis();
-
-        // Continuous CSV recording with real timestamps
-        if (continuousMode && isRecording) {
-            if (now - lastContinuousCsv >= CONTINUOUS_CSV_INTERVAL_MS) {
-                if (filteredDistance >= 0 && filteredDistance <= MAX_VALID_RANGE_MM) {
-                    csvData.add(new float[]{filteredDistance, tiltCompensator.getPitchDegrees(), (float) now});
-                }
-                lastContinuousCsv = now;
-                final int count = csvData.size();
-                final long elapsed = (now - recordStartTime) / 1000;
-                mainHandler.post(() -> {
-                    if (recordCountText != null) recordCountText.setText(count + " 条数据");
-                    if (recordTimeText != null && recordStartTime > 0)
-                        recordTimeText.setText(String.format(Locale.US, "已记录 %d:%02d", elapsed / 60, elapsed % 60));
-                });
-            }
-        }
-
-        // Throttled UI update
-        if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
-            lastUiUpdateMs = now;
-            float stabInput = (rawMm < 0) ? -1 : (filteredDistance >= 0 ? filteredDistance : currentDistance);
-            final float displayDist = stabilizer.update(stabInput, shakeDetector.isShaking());
-            mainHandler.post(() -> updateDisplay(displayDist));
+            debugSb.setLength(0);
+            debugSb.append("传感器原始: ").append(String.format(Locale.US, "%.1f", lastRawSensorValue))
+                    .append(" mm [阈值:").append((int) sensorCtrl.getMaxRange()).append("]\n")
+                    .append("范围过滤后: ").append(String.format(Locale.US, "%.1f", currentDistance)).append(" mm\n")
+                    .append("滤波: ").append(String.format(Locale.US, "%.1f", filteredDistance)).append(" mm\n")
+                    .append("倾斜: ").append(String.format(Locale.US, "%.1f", tc.getPitchDegrees())).append("°\n")
+                    .append("水平: ").append(String.format(Locale.US, "%.1f", tc.getHorizontalDistance(filteredDistance))).append(" mm\n")
+                    .append("采样: ").append(stats.getSampleCount()).append(" | Hz: ").append(stats.getActualHz()).append("\n")
+                    .append("σ: ").append(String.format(Locale.US, "%.2f", stats.getStdDev())).append(" mm");
+            debugText.setText(debugSb.toString());
         }
     }
 
@@ -803,20 +715,14 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     // ─────────────────────────────────────────────
 
     private void resetMeasurement() {
-        filter.reset();
-        stats.reset();
-        tiltCompensator.resetCalibration();
-        shakeDetector.reset();
-        stabilizer.reset();
-        csvData.clear();
-        isRecording = false;
-        continuousMode = false;
+        sensorCtrl.reset();
+        recorder.clear();
+        recorder.stopRecording();
         if (recordBtn != null) { recordBtn.setLabel("开始"); recordBtn.setActive(false); }
         if (recordStatusText != null) { recordStatusText.setText("数据记录"); recordStatusText.setTextColor(ThemeColors.TEXT); }
         if (recordCountText != null) recordCountText.setText("0 条数据");
         if (recordTimeText != null) recordTimeText.setText("0:00");
         if (recordDistText != null) recordDistText.setText("");
-        recordStartTime = 0;
         if (continuousBtn != null) continuousBtn.setLabel("连续模式");
         currentDistance = -1;
         filteredDistance = -1;
@@ -825,52 +731,6 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         qualityBar.setProgress(0);
         statusText.setText("已重置");
         debugText.setText("");
-    }
-
-    /**
-     * CSV export on background thread with real timestamps.
-     */
-    private void exportCsv() {
-        final List<float[]> snapshot = new ArrayList<>(csvData);
-        if (snapshot.isEmpty()) {
-            statusText.setText("无数据");
-            return;
-        }
-        new Thread(() -> {
-            try {
-                SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
-                String filename = "tof_" + sdf.format(new Date()) + ".csv";
-                File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
-                if (dir == null) dir = getFilesDir();
-                File file = new File(dir, filename);
-
-                BufferedWriter writer = new BufferedWriter(new FileWriter(file));
-                writer.write("timestamp_ms,distance_mm,tilt_deg");
-                writer.newLine();
-                for (float[] row : snapshot) {
-                    long ts = (row.length > 2) ? (long) row[2] : System.currentTimeMillis();
-                    writer.write(String.format(Locale.US, "%d,%.1f,%.1f", ts, row[0], row[1]));
-                    writer.newLine();
-                }
-                writer.close();
-
-                mainHandler.post(() -> {
-                    statusText.setText("已导出: " + filename);
-                    vibrate(80);
-                    try {
-                        Uri contentUri = FileProvider.getUriForFile(this,
-                                getApplicationContext().getPackageName() + ".fileprovider", file);
-                        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-                        shareIntent.setType("text/csv");
-                        shareIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
-                        shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                        startActivity(Intent.createChooser(shareIntent, "分享CSV"));
-                    } catch (ActivityNotFoundException | IllegalArgumentException ignored) {}
-                });
-            } catch (IOException e) {
-                mainHandler.post(() -> statusText.setText("导出失败: " + e.getMessage()));
-            }
-        }).start();
     }
 
     // ─────────────────────────────────────────────

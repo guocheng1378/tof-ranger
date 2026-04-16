@@ -13,6 +13,7 @@ import android.widget.FrameLayout;
  * Apple Liquid Glass card — multi-layer frosted glass with
  * specular highlight, rim light, inner shadow, and accent tint.
  * Gradients are cached and only rebuilt on size/theme change.
+ * RectF objects are pre-allocated to avoid GC in onDraw.
  */
 public class GlassCardView extends FrameLayout {
 
@@ -22,24 +23,33 @@ public class GlassCardView extends FrameLayout {
     private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint tintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    // Pre-allocated RectFs — reused across frames
     private final RectF rect = new RectF();
     private final RectF bottomEdge = new RectF();
+    private final RectF innerShadowRect = new RectF();
+
     private float cornerRadius;
     private int accentTint = 0;
     private float lastW = -1, lastH = -1;
     private boolean dirty = true;
 
+    // Cached constants
+    private static final float INSET = 5f;
+    private static final float EDGE_H = 3.5f;
+    private static final float INNER_SHADOW_H = 6f;
+
     public GlassCardView(Context ctx) {
         super(ctx);
         setWillNotDraw(false);
         setClipChildren(false);
-        cornerRadius = 28f;
+        cornerRadius = ThemeColors.dp(20);
         bgPaint.setStyle(Paint.Style.FILL);
         edgePaint.setStyle(Paint.Style.STROKE);
         edgePaint.setStrokeWidth(1.2f);
         tintPaint.setStyle(Paint.Style.FILL);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            setElevation(dp(6));
+            setElevation(ThemeColors.dp(6));
         }
         refreshThemeColors();
     }
@@ -67,15 +77,14 @@ public class GlassCardView extends FrameLayout {
         lastW = w; lastH = h; dirty = false;
         float specH = h * 0.35f;
         float rimH = h * 0.25f;
-        float inset = 5f;
         boolean light = ThemeColors.isLight;
         int specTopC = light ? 0x1A000000 : 0x22FFFFFF;
         shinePaint.setShader(new LinearGradient(
-                inset, inset, inset, inset + specH,
+                INSET, INSET, INSET, INSET + specH,
                 new int[]{specTopC, 0x00000000}, null, Shader.TileMode.CLAMP));
         int rimBotC = light ? 0x0A000000 : 0x0DFFFFFF;
         rimPaint.setShader(new LinearGradient(
-                inset, h - inset - rimH, inset, h - inset,
+                INSET, h - INSET - rimH, INSET, h - INSET,
                 new int[]{0x00000000, rimBotC}, null, Shader.TileMode.CLAMP));
     }
 
@@ -84,34 +93,26 @@ public class GlassCardView extends FrameLayout {
         super.onDraw(canvas);
         rebuildGradientsIfNeeded();
         float r = cornerRadius;
-        float inset = 5f;
-        rect.set(inset, inset, getWidth() - inset, getHeight() - inset);
+        rect.set(INSET, INSET, getWidth() - INSET, getHeight() - INSET);
 
         canvas.drawRoundRect(rect, r, r, bgPaint);
         canvas.drawRoundRect(rect, r, r, shinePaint);
         canvas.drawRoundRect(rect, r, r, rimPaint);
         canvas.drawRoundRect(rect, r, r, edgePaint);
 
-        float innerShadowH = 6f;
         boolean light = ThemeColors.isLight;
         int innerShadowC = light ? 0x0D000000 : 0x15000000;
         innerShadowPaint.setShader(new LinearGradient(
-                rect.left, rect.top, rect.left, rect.top + innerShadowH,
+                rect.left, rect.top, rect.left, rect.top + INNER_SHADOW_H,
                 new int[]{innerShadowC, 0x00000000}, null, Shader.TileMode.CLAMP));
         innerShadowPaint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(
-                new RectF(rect.left, rect.top, rect.right, rect.top + innerShadowH),
-                r, r, innerShadowPaint);
+        innerShadowRect.set(rect.left, rect.top, rect.right, rect.top + INNER_SHADOW_H);
+        canvas.drawRoundRect(innerShadowRect, r, r, innerShadowPaint);
 
         if (accentTint != 0) {
-            float edgeH = 3.5f;
-            bottomEdge.set(rect.left, rect.bottom - edgeH, rect.right, rect.bottom);
+            bottomEdge.set(rect.left, rect.bottom - EDGE_H, rect.right, rect.bottom);
             tintPaint.setColor(accentTint & 0x80FFFFFF);
             canvas.drawRoundRect(bottomEdge, r, r, tintPaint);
         }
-    }
-
-    private int dp(float v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 }

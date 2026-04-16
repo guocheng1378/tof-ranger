@@ -40,6 +40,14 @@ public final class ThemeColors {
     private static final int C_DEBUG_DIM_LIGHT = 0x661C1C1E;
     private static final int C_SEP_DIM_LIGHT   = 0x331C1C1E;
 
+    // Cached density for dp() — set in Activity.onCreate via initDensity()
+    public static float DENSITY = 1f;
+
+    /** Convert dp to px using cached density. */
+    public static int dp(float v) {
+        return (int) (v * DENSITY + 0.5f);
+    }
+
     // Active
     public static int BG, ACCENT, ACCENT2, ACCENT3;
     public static int TEXT, TEXT_DIM, GLASS_BG, GLASS_EDGE, GLASS_SHINE;
