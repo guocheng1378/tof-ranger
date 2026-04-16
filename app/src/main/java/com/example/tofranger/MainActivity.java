@@ -54,7 +54,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
 
     // ── Sensor ──
     private static final int SENSOR_TYPE_MIUI_TOF = 33171040;
-    private static final float MAX_VALID_RANGE_MM = 8000f;
+    private static final float MAX_VALID_RANGE_MM = 4000f;
     private boolean isProximityFallback = false;
     private SensorManager sensorManager;
     private Sensor tofSensor;
