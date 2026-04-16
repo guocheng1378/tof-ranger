@@ -81,6 +81,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
     private DistanceFilter filter;
     private DistanceStats stats;
     private ShakeDetector shakeDetector;
+    private Stabilizer stabilizer;
     private TiltCompensator tiltCompensator;
 
     // ── CSV (thread-safe) ──
@@ -135,6 +136,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         filter = new DistanceFilter(7, 0.25f, 150, MAX_VALID_RANGE_MM);
         stats = new DistanceStats(200);
         shakeDetector = new ShakeDetector();
+        stabilizer = new Stabilizer();
         tiltCompensator = new TiltCompensator();
 
         buildUI();
@@ -651,7 +653,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         }
 
         String tiltInfo = tiltCompensator.getTiltQuality();
-        String shakeInfo = shakeDetector.isShaking() ? " 手抖" : "";
+        String shakeInfo = shakeDetector.isShaking() ? " 防抖中(" + stabilizer.getBufferedCount() + ")" : "";
         String lockInfo = isLocked ? " 锁定" : "";
         statusText.setText(tiltInfo + shakeInfo + lockInfo);
 
@@ -776,7 +778,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         // Throttled UI update
         if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdateMs = now;
-            final float displayDist = currentDistance;
+            final float displayDist = stabilizer.update(filteredDistance >= 0 ? filteredDistance : currentDistance, shakeDetector.isShaking());
             mainHandler.post(() -> updateDisplay(displayDist));
         }
     }
@@ -790,6 +792,7 @@ public class MainActivity extends ComponentActivity implements SensorEventListen
         stats.reset();
         tiltCompensator.resetCalibration();
         shakeDetector.reset();
+        stabilizer.reset();
         csvData.clear();
         isRecording = false;
         continuousMode = false;
