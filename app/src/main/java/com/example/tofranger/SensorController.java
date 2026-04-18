@@ -10,18 +10,12 @@ import android.hardware.SensorManager;
  * Manages ToF sensor discovery, registration, and data flow.
  * Extracted from MainActivity to separate sensor concerns.
  *
- * Usage:
- *   SensorController ctrl = new SensorController(context);
- *   ctrl.setListener(myListener);
- *   ctrl.resume();  // in onResume
- *   ctrl.pause();   // in onPause
+ * v3.2: Passes filter.getMovementSpeed() to Stabilizer for adaptive EMA.
  */
 public class SensorController implements SensorEventListener {
 
     public interface ToFListener {
-        /** Called with filtered distance in mm, or -1 for invalid. */
         void onDistance(float distanceMm, float rawMm);
-        /** Called with sensor status string. */
         void onSensorStatus(String status);
     }
 
@@ -126,13 +120,11 @@ public class SensorController implements SensorEventListener {
 
     /**
      * Process raw ToF reading through the filter pipeline.
-     * @return {filteredDistance, rawMm, stabilizerOutput}
      */
     public float[] processReading(float rawMm) {
         if (!registered) return new float[]{-1, rawMm, -1};
 
         float raw = rawMm;
-        // Discard VL53 overflow sentinel
         if (raw >= VL53_OVERFLOW) raw = -1;
         else if (raw > MAX_VALID_RANGE_MM) raw = -1;
 
@@ -141,7 +133,9 @@ public class SensorController implements SensorEventListener {
         stats.add(filtered >= 0 ? filtered : raw);
 
         float stabInput = (raw < 0) ? -1 : (filtered >= 0 ? filtered : raw);
-        float stabilized = stabilizer.update(stabInput, shakeDetector.isShaking());
+        // v3.2: Pass movement speed to stabilizer for adaptive EMA
+        float movementSpeed = filter.getMovementSpeed();
+        float stabilized = stabilizer.update(stabInput, shakeDetector.isShaking(), movementSpeed);
 
         return new float[]{filtered, raw, stabilized};
     }
@@ -151,7 +145,6 @@ public class SensorController implements SensorEventListener {
             float[] result = processReading(rawMm);
             listener.onDistance(result[2], result[1]); // stabilized, raw
         } else {
-            // Process silently to keep stats accurate
             processReading(rawMm);
         }
     }
