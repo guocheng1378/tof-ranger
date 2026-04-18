@@ -406,7 +406,7 @@ public class MainActivity extends ComponentActivity implements SensorController.
             statsRow.addView(tv);
         }
         statMinText = refs[0]; statMaxText = refs[1]; statAvgText = refs[2]; statStdText = refs[3];
-        statsRow.setVisibility(View.VISIBLE);
+        statsRow.setVisibility(View.GONE);
         contentLayout.addView(statsRow);
     }
 
