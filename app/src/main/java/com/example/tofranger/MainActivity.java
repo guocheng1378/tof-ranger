@@ -191,7 +191,7 @@ public class MainActivity extends ComponentActivity implements SensorController.
 
         if (isPaused) return;
 
-        filteredDistance = sensorCtrl.getFilter().getCurrentValue();
+        filteredDistance = (rawMm >= 0) ? sensorCtrl.getFilter().getCurrentValue() : -1;
 
         // Continuous CSV recording
         if (recorder.addContinuous(
