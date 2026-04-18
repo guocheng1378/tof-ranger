@@ -55,7 +55,7 @@ public class MainActivity extends ComponentActivity implements SensorController.
     private volatile float currentDistance = -1;
     private volatile float filteredDistance = -1;
     private volatile float lastRawSensorValue = -1;
-    private volatile float smoothDisplay = -1;
+    private float smoothDisplay = -1;
     private static final float DISPLAY_ALPHA = 0.15f;
     private boolean isLocked = false;
     private boolean isPaused = false;
@@ -200,7 +200,7 @@ public class MainActivity extends ComponentActivity implements SensorController.
             mainHandler.post(() -> updateRecordUI(count, elapsed, null));
         }
 
-        // Throttled UI update
+        // Throttled UI update — pass the stabilized value directly
         long now = System.currentTimeMillis();
         if (now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdateMs = now;
@@ -586,7 +586,7 @@ public class MainActivity extends ComponentActivity implements SensorController.
         themeBtn = makeFlatBtn(ThemeColors.isLight ? "🌙 深色模式" : "☀️ 浅色模式", ThemeColors.TEXT_DIM, () -> {
             isLightTheme = !isLightTheme;
             ThemeColors.apply(isLightTheme);
-            rebuildUI();
+            refreshThemeColors();
             vibrate(30);
         });
 
@@ -636,19 +636,49 @@ public class MainActivity extends ComponentActivity implements SensorController.
         }
     }
 
-    private void rebuildUI() {
-        rootLayout.removeAllViews();
-        buildUI();
-        setContentView(rootLayout);
-        ViewCompat.setOnApplyWindowInsetsListener(rootLayout, (v, insets) -> {
-            int top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
-            contentLayout.setPadding(dp(20), top + dp(16), dp(20), dp(120));
-            return insets;
-        });
-        if (currentDistance >= 0) updateDisplay(currentDistance);
-        updateLockButton();
-        updatePauseButton();
-        updateUnitDisplay();
+    /** Refresh theme colors in-place without rebuilding the entire UI tree. */
+    private void refreshThemeColors() {
+        rootLayout.setBackgroundColor(ThemeColors.BG);
+
+        // Update distance card
+        distanceCard.setAccentTint(isLocked ? 0xFFFF453A : ThemeColors.ACCENT);
+        valueText.setTextColor(ThemeColors.TEXT);
+        unitText.setTextColor(ThemeColors.ACCENT);
+        statusText.setTextColor(ThemeColors.TEXT_DIM);
+
+        // Update record card text colors
+        recordStatusText.setTextColor(ThemeColors.TEXT);
+        recordCountText.setTextColor(ThemeColors.TEXT_DIM);
+        recordTimeText.setTextColor(ThemeColors.TEXT_DIM);
+        recordDistText.setTextColor(ThemeColors.ACCENT);
+
+        // Update debug text
+        debugText.setTextColor(ThemeColors.DEBUG_DIM);
+
+        // Update bottom bar
+        lockBtn.setAccentColor(isLocked ? 0xFFFF453A : ThemeColors.ACCENT);
+        pauseBtn.setAccentColor(ThemeColors.ACCENT2);
+        unitBtn.setAccentColor(ThemeColors.ACCENT3);
+        moreBtn.setAccentColor(ThemeColors.TEXT_DIM);
+
+        // Update more panel background
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(ThemeColors.isLight ? 0xEEFFFFFF : 0xE62C2C2E);
+        panelBg.setCornerRadius(dp(20));
+        morePanel.setBackground(panelBg);
+
+        // Update more panel button label
+        themeBtn.setLabel(ThemeColors.isLight ? "🌙 深色模式" : "☀️ 浅色模式");
+
+        // Rebuild bottom bar glass background
+        if (bottomBarFloat != null) {
+            // The GlassBarView reads ThemeColors on draw, so invalidate triggers repaint
+            bottomBarFloat.invalidate();
+        }
+
+        // Invalidate custom views
+        qualityBar.onThemeChanged();
+        distanceCard.invalidate();
     }
 
     private void updateDisplay(float distMm) {
@@ -670,7 +700,6 @@ public class MainActivity extends ComponentActivity implements SensorController.
             default: displayDist = src / 10f; unit = "cm"; break;
         }
 
-        // Use integer formatting for cleaner display when possible
         if (displayDist < 0) {
             valueText.setText("—");
         } else {
@@ -698,16 +727,22 @@ public class MainActivity extends ComponentActivity implements SensorController.
         // Debug text (StringBuilder to avoid String.format GC)
         if (debugVisible) {
             debugSb.setLength(0);
-            debugSb.append("传感器原始: ").append(String.format(Locale.US, "%.1f", lastRawSensorValue))
+            debugSb.append("传感器原始: ").append(formatFloat(lastRawSensorValue))
                     .append(" mm [阈值:").append((int) sensorCtrl.getMaxRange()).append("]\n")
-                    .append("范围过滤后: ").append(String.format(Locale.US, "%.1f", currentDistance)).append(" mm\n")
-                    .append("滤波: ").append(String.format(Locale.US, "%.1f", filteredDistance)).append(" mm\n")
-                    .append("倾斜: ").append(String.format(Locale.US, "%.1f", tc.getPitchDegrees())).append("°\n")
-                    .append("水平: ").append(String.format(Locale.US, "%.1f", tc.getHorizontalDistance(filteredDistance))).append(" mm\n")
+                    .append("范围过滤后: ").append(formatFloat(currentDistance)).append(" mm\n")
+                    .append("滤波: ").append(formatFloat(filteredDistance)).append(" mm\n")
+                    .append("倾斜: ").append(formatFloat(tc.getPitchDegrees())).append("°\n")
+                    .append("水平: ").append(formatFloat(tc.getHorizontalDistance(filteredDistance))).append(" mm\n")
                     .append("采样: ").append(stats.getSampleCount()).append(" | Hz: ").append(stats.getActualHz()).append("\n")
-                    .append("σ: ").append(String.format(Locale.US, "%.2f", stats.getStdDev())).append(" mm");
+                    .append("σ: ").append(formatFloat(stats.getStdDev())).append(" mm");
             debugText.setText(debugSb.toString());
         }
+    }
+
+    /** Format float to 1 decimal without String.format (GC-free in hot path). */
+    private String formatFloat(float v) {
+        if (v < 0) return "-1";
+        return String.format(Locale.US, "%.1f", v);
     }
 
     // ─────────────────────────────────────────────
