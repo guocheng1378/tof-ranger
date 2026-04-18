@@ -6,10 +6,9 @@ import java.util.Arrays;
  * Multi-stage signal processing for dToF distance data.
  * Pipeline: raw → spike reject → median → adaptive EMA → output
  *
- * Improvements over v1:
- * - Adaptive EMA: alpha increases when target is moving fast, decreases when stable
- * - Spike handling: soft reject (blend toward boundary) instead of hard cap
- * - Movement detection: tracks recent variance to adjust filter aggressiveness
+ * v3.2 fixes:
+ * - Median buffer always used (no rawMm bypass for first 2 samples)
+ * - Consistent pipeline: all samples go through median → EMA
  */
 public class DistanceFilter {
 
@@ -24,8 +23,8 @@ public class DistanceFilter {
     private boolean emaInitialized = false;
 
     // Adaptive parameters
-    private final float baseAlpha;    // base EMA factor (stable state)
-    private final float fastAlpha;    // EMA factor when moving fast
+    private final float baseAlpha;
+    private final float fastAlpha;
     private float currentAlpha;
 
     private float lastOutput = -1;
@@ -35,13 +34,13 @@ public class DistanceFilter {
 
     // Movement detection
     private float recentDelta = 0;
-    private static final float DELTA_DECAY = 0.9f;  // how fast movement memory fades
-    private static final float MOVEMENT_THRESHOLD = 15f; // mm/s — below this = stable
+    private static final float DELTA_DECAY = 0.9f;
+    private static final float MOVEMENT_THRESHOLD = 15f;
     private long lastFilterTime = 0;
 
-    // Outlier counter — consecutive spikes suggest real movement, not noise
+    // Outlier counter
     private int consecutiveSpikes = 0;
-    private static final int SPIKE_TOLERANCE = 3; // allow N consecutive spikes before adapting
+    private static final int SPIKE_TOLERANCE = 3;
 
     /**
      * @param windowSize   median window
@@ -54,7 +53,7 @@ public class DistanceFilter {
         this.medianBuffer = new float[windowSize];
         this.sortBuffer = new float[windowSize];
         this.baseAlpha = alpha;
-        this.fastAlpha = Math.min(0.7f, alpha * 3f); // 3x faster when moving
+        this.fastAlpha = Math.min(0.7f, alpha * 3f);
         this.currentAlpha = alpha;
         this.maxJumpMm = maxJumpMm;
         this.maxRangeMm = maxRangeMm;
@@ -98,14 +97,11 @@ public class DistanceFilter {
             if (absJump > maxJumpMm) {
                 consecutiveSpikes++;
                 if (consecutiveSpikes > SPIKE_TOLERANCE) {
-                    // Multiple consecutive spikes → likely real movement, increase tolerance
                     float adaptiveMax = maxJumpMm * 2f;
                     if (absJump > adaptiveMax) {
                         rawMm = lastRaw + Math.signum(jump) * adaptiveMax;
                     }
-                    // else: accept it
                 } else {
-                    // Single spike → soft blend toward boundary
                     rawMm = lastRaw + Math.signum(jump) * maxJumpMm * 0.7f;
                 }
             } else {
@@ -113,16 +109,16 @@ public class DistanceFilter {
             }
         }
 
-        // Track movement speed (rate of change)
+        // Track movement speed
         if (lastOutput >= 0 && dt > 0 && dt < 0.2f) {
-            float instantDelta = Math.abs(rawMm - lastOutput) / dt; // mm/s
+            float instantDelta = Math.abs(rawMm - lastOutput) / dt;
             recentDelta = recentDelta * DELTA_DECAY + instantDelta * (1f - DELTA_DECAY);
         }
         lastRaw = rawMm;
 
-        // Adaptive alpha: fast when moving, smooth when stable
+        // Adaptive alpha
         if (recentDelta > MOVEMENT_THRESHOLD * 10) {
-            currentAlpha = fastAlpha; // very fast movement
+            currentAlpha = fastAlpha;
         } else if (recentDelta > MOVEMENT_THRESHOLD) {
             float t = (recentDelta - MOVEMENT_THRESHOLD) / (MOVEMENT_THRESHOLD * 9f);
             currentAlpha = baseAlpha + (fastAlpha - baseAlpha) * t;
@@ -135,8 +131,10 @@ public class DistanceFilter {
         medianPos = (medianPos + 1) % windowSize;
         if (medianPos == 0) medianFilled = true;
 
+        // FIX: Always use median buffer value, even for first samples
         int count = medianFilled ? windowSize : medianPos;
-        if (count < 2) {
+        if (count == 0) {
+            // Should not happen (we just wrote), but guard
             return applyEma(rawMm);
         }
 
@@ -181,7 +179,6 @@ public class DistanceFilter {
         return medianFilled || medianPos >= 2;
     }
 
-    /** Current estimated movement speed in mm/s. */
     public float getMovementSpeed() {
         return recentDelta;
     }
