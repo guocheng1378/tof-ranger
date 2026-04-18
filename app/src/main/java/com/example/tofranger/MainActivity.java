@@ -57,6 +57,8 @@ public class MainActivity extends ComponentActivity implements SensorController.
     private volatile float lastRawSensorValue = -1;
     private float smoothDisplay = -1;
     private static final float DISPLAY_ALPHA = 0.15f;
+    private int consecutiveInvalidCount = 0;
+    private static final int MAX_INVALID_BEFORE_CLEAR = 10;
     private boolean isLocked = false;
     private boolean isPaused = false;
     private int unitMode = 0;
@@ -683,6 +685,20 @@ public class MainActivity extends ComponentActivity implements SensorController.
 
     private void updateDisplay(float distMm) {
         if (isLocked) return;
+
+        // Sensor dead? Clear stale display
+        if (distMm < 0) {
+            consecutiveInvalidCount++;
+            if (consecutiveInvalidCount >= MAX_INVALID_BEFORE_CLEAR) {
+                smoothDisplay = -1;
+                valueText.setText("—");
+                statusText.setText("传感器无信号 · 检查光线/表面角度");
+                qualityBar.setProgress(0);
+                return;
+            }
+        } else {
+            consecutiveInvalidCount = 0;
+        }
 
         // Smooth EMA toward target
         if (smoothDisplay < 0) {
