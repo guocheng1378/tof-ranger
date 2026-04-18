@@ -124,16 +124,27 @@ public class SensorController implements SensorEventListener {
     public float[] processReading(float rawMm) {
         if (!registered) return new float[]{-1, rawMm, -1};
 
+        // FIX: Check raw BEFORE filtering — filter.filter(-1) returns stale EMA
+        boolean sensorDead = (rawMm < 0 || rawMm >= VL53_OVERFLOW || rawMm > MAX_VALID_RANGE_MM);
+
         float raw = rawMm;
         if (raw >= VL53_OVERFLOW) raw = -1;
         else if (raw > MAX_VALID_RANGE_MM) raw = -1;
 
         stats.tickHz();
-        float filtered = filter.filter(raw);
-        stats.add(filtered >= 0 ? filtered : raw);
 
-        float stabInput = (raw < 0) ? -1 : (filtered >= 0 ? filtered : raw);
-        // v3.2: Pass movement speed to stabilizer for adaptive EMA
+        float filtered;
+        float stabInput;
+        if (sensorDead) {
+            // Sensor has no signal — bypass filter, tell stabilizer to clear
+            filtered = -1;
+            stabInput = -1;
+        } else {
+            filtered = filter.filter(raw);
+            stats.add(filtered >= 0 ? filtered : raw);
+            stabInput = (filtered >= 0) ? filtered : raw;
+        }
+
         float movementSpeed = filter.getMovementSpeed();
         float stabilized = stabilizer.update(stabInput, shakeDetector.isShaking(), movementSpeed);
 
