@@ -1,12 +1,7 @@
 package com.example.tofranger;
 
-import android.content.ActivityNotFoundException;
 import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
 import android.os.Environment;
-
-import androidx.core.content.FileProvider;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -21,13 +16,27 @@ import java.util.Locale;
 /**
  * Thread-safe CSV data recorder for distance measurements.
  *
- * Replaces CopyOnWriteArrayList with synchronized ArrayList
- * for better write performance (reads are rare, writes are frequent).
+ * FIX: Uses proper data class (static inner class) instead of float[]
+ * to avoid float→long precision loss for timestamps.
+ * FIX: All access to the data list is synchronized consistently.
  */
 public class DataRecorder {
 
-    // Thread-safe for concurrent sensor + UI access, but lighter than CopyOnWrite
-    private final List<float[]> data = new ArrayList<>();
+    /** Immutable data point with proper types. */
+    private static class DataPoint {
+        final float distanceMm;
+        final float tiltDeg;
+        final long timestampMs;
+
+        DataPoint(float distanceMm, float tiltDeg, long timestampMs) {
+            this.distanceMm = distanceMm;
+            this.tiltDeg = tiltDeg;
+            this.timestampMs = timestampMs;
+        }
+    }
+
+    private final List<DataPoint> data = new ArrayList<>();
+    private final Object lock = new Object();
     private volatile boolean recording = false;
     private volatile boolean continuousMode = false;
     private long recordStartTime = 0;
@@ -41,7 +50,7 @@ public class DataRecorder {
     public void setContinuousMode(boolean c) { this.continuousMode = c; }
 
     public void startRecording() {
-        synchronized (data) { data.clear(); }
+        synchronized (lock) { data.clear(); }
         recordStartTime = System.currentTimeMillis();
         recording = true;
         lastContinuousMs = 0;
@@ -55,8 +64,8 @@ public class DataRecorder {
     /** Add a single data point (manual record). */
     public void addPoint(float distanceMm, float tiltDeg) {
         if (!recording || distanceMm < 0) return;
-        synchronized (data) {
-            data.add(new float[]{distanceMm, tiltDeg, System.currentTimeMillis()});
+        synchronized (lock) {
+            data.add(new DataPoint(distanceMm, tiltDeg, System.currentTimeMillis()));
         }
     }
 
@@ -66,14 +75,14 @@ public class DataRecorder {
         long now = System.currentTimeMillis();
         if (now - lastContinuousMs < CONTINUOUS_INTERVAL_MS) return false;
         lastContinuousMs = now;
-        synchronized (data) {
-            data.add(new float[]{distanceMm, tiltDeg, now});
+        synchronized (lock) {
+            data.add(new DataPoint(distanceMm, tiltDeg, now));
         }
         return true;
     }
 
     public int getCount() {
-        synchronized (data) { return data.size(); }
+        synchronized (lock) { return data.size(); }
     }
 
     public long getElapsedSeconds() {
@@ -82,18 +91,16 @@ public class DataRecorder {
     }
 
     public void clear() {
-        synchronized (data) { data.clear(); }
+        synchronized (lock) { data.clear(); }
         recordStartTime = 0;
     }
 
     /**
      * Export data to CSV file on background thread.
-     * @param context  app context
-     * @param callback called on success/failure with filename or error message
      */
     public void exportCsv(Context context, ExportCallback callback) {
-        final List<float[]> snapshot;
-        synchronized (data) { snapshot = new ArrayList<>(data); }
+        final List<DataPoint> snapshot;
+        synchronized (lock) { snapshot = new ArrayList<>(data); }
         if (snapshot.isEmpty()) {
             callback.onError("无数据");
             return;
@@ -109,9 +116,9 @@ public class DataRecorder {
                 BufferedWriter writer = new BufferedWriter(new FileWriter(file));
                 writer.write("timestamp_ms,distance_mm,tilt_deg");
                 writer.newLine();
-                for (float[] row : snapshot) {
-                    long ts = (row.length > 2) ? (long) row[2] : System.currentTimeMillis();
-                    writer.write(String.format(Locale.US, "%d,%.1f,%.1f", ts, row[0], row[1]));
+                for (DataPoint dp : snapshot) {
+                    writer.write(String.format(Locale.US, "%d,%.1f,%.1f",
+                            dp.timestampMs, dp.distanceMm, dp.tiltDeg));
                     writer.newLine();
                 }
                 writer.close();
