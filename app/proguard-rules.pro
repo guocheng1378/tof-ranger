@@ -1,10 +1,11 @@
-# ToF Ranger ProGuard Rules
+# Add project specific ProGuard rules here.
 
-# Keep all app classes (small app, no need to strip)
--keep class com.example.tofranger.** { *; }
+# Keep custom views (used via XML or reflection in some Android versions)
+-keep class com.example.tofranger.view.** { *; }
 
-# Keep sensor-related Android classes
--keep class android.hardware.** { *; }
+# Keep DataRecorder inner class for CSV export
+-keep class com.example.tofranger.DataRecorder$DataPoint { *; }
+-keep class com.example.tofranger.DataRecorder$ExportCallback { *; }
 
-# Suppress warnings for optional dependencies
--dontwarn android.speech.tts.**
+# Keep sensor listener interface
+-keep class com.example.tofranger.SensorController$ToFListener { *; }
