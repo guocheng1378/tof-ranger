@@ -85,6 +85,8 @@ public class TiltCompensator {
 
         long now = System.nanoTime();
         if (lastGyroTime == 0) {
+            // First gyro frame: seed pitch from accelerometer instead of leaving it at 0
+            pitchRad = accelPitchRad;
             lastGyroTime = now;
             lastDriftCheckNanos = now;
             return;
