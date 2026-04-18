@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace 'com.guocheng.tofranger'
+    namespace 'com.example.tofranger'
     compileSdk 35
 
     defaultConfig {
