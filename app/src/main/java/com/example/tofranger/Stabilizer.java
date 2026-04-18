@@ -1,21 +1,17 @@
 package com.example.tofranger;
 
-import java.util.Arrays;
-
 /**
  * Shake-aware distance stabilizer with weighted median output.
  *
- * Improvements over v1:
- * - Weighted samples: recent readings have higher weight in shake buffer
- * - Gradual fade-out: stabilizer blends buffer median with latest reading
- *   over a short transition instead of hard switch
- * - Adaptive convergence: faster EMA when not shaking, slower when transitioning
+ * v3.2 optimizations:
+ * - Adaptive EMA in normal mode: uses filter movement speed to adjust responsiveness
+ * - Guard against returning rawMm during shake (should hold last stable value)
  */
 public class Stabilizer {
 
     private static final int BUFFER_SIZE = 20;
     private final float[] buffer = new float[BUFFER_SIZE];
-    private final float[] weights = new float[BUFFER_SIZE]; // temporal weights
+    private final float[] weights = new float[BUFFER_SIZE];
     private int bufferPos = 0;
     private boolean bufferFull = false;
 
@@ -31,9 +27,14 @@ public class Stabilizer {
 
     // Transition blending after shake ends
     private float transitionAlpha = 0f;
-    private static final float TRANSITION_RATE = 0.15f; // blend speed per call
+    private static final float TRANSITION_RATE = 0.15f;
 
-    public float update(float filteredMm, boolean isShaking) {
+    /**
+     * @param filteredMm      output from DistanceFilter
+     * @param isShaking       from ShakeDetector
+     * @param movementSpeedMm from DistanceFilter.getMovementSpeed() (mm/s), 0 if unknown
+     */
+    public float update(float filteredMm, boolean isShaking, float movementSpeedMm) {
         if (filteredMm < 0) {
             invalidCount++;
             if (invalidCount >= MAX_INVALID_BEFORE_SHOW_DASH) {
@@ -52,10 +53,11 @@ public class Stabilizer {
 
         if (isShaking) {
             buffer[bufferPos] = filteredMm;
-            weights[bufferPos] = bufferPos + 1f; // newer = higher weight
+            weights[bufferPos] = bufferPos + 1f;
             bufferPos = (bufferPos + 1) % BUFFER_SIZE;
             if (bufferPos == 0) bufferFull = true;
             wasShaking = true;
+            // FIX: Hold last stabilized value during shake, not raw filteredMm
             return stabilizedValue >= 0 ? stabilizedValue : filteredMm;
         }
 
@@ -84,23 +86,39 @@ public class Stabilizer {
             return stabilizedValue;
         }
 
-        // Normal (no shake) → responsive EMA
+        // Normal (no shake) → adaptive EMA based on movement speed
+        // Faster movement → higher weight on new value (more responsive)
+        // Stationary → higher weight on old value (smoother)
+        float newWeight;
+        if (movementSpeedMm > 100f) {
+            newWeight = 0.8f;      // very fast: 80% new
+        } else if (movementSpeedMm > 30f) {
+            newWeight = 0.65f;     // moderate: 65% new
+        } else {
+            newWeight = 0.55f;     // stable: 55% new (slight preference for new to reduce lag)
+        }
+
         if (stabilizedValue < 0) {
             stabilizedValue = filteredMm;
         } else {
-            stabilizedValue = stabilizedValue * 0.4f + filteredMm * 0.6f;
+            stabilizedValue = stabilizedValue * (1f - newWeight) + filteredMm * newWeight;
         }
         return stabilizedValue;
     }
 
+    /** Backward-compatible overload (no movement speed). */
+    public float update(float filteredMm, boolean isShaking) {
+        return update(filteredMm, isShaking, 0f);
+    }
+
     /**
      * Weighted median: sort by value, find where cumulative weight crosses 50%.
+     * Uses insertion sort (optimal for small N ≤ 20).
      */
     private float weightedMedian(int count) {
         System.arraycopy(buffer, 0, sortBuf, 0, count);
         System.arraycopy(weights, 0, weightBuf, 0, count);
 
-        // Simple insertion sort by value (small N, avoids allocation)
         for (int i = 1; i < count; i++) {
             float key = sortBuf[i];
             float wKey = weightBuf[i];
