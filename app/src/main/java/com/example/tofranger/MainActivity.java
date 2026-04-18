@@ -159,6 +159,10 @@ public class MainActivity extends ComponentActivity implements SensorController.
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // Only intercept volume keys when activity is in foreground
+        if (isPaused && !isFinishing()) {
+            return super.dispatchKeyEvent(event);
+        }
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             if (event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_UP ||
                 event.getKeyCode() == KeyEvent.KEYCODE_VOLUME_DOWN) {
@@ -402,7 +406,7 @@ public class MainActivity extends ComponentActivity implements SensorController.
             statsRow.addView(tv);
         }
         statMinText = refs[0]; statMaxText = refs[1]; statAvgText = refs[2]; statStdText = refs[3];
-        statsRow.setVisibility(View.GONE);
+        statsRow.setVisibility(View.VISIBLE);
         contentLayout.addView(statsRow);
     }
 
