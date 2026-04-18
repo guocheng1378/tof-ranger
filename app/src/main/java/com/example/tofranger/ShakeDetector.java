@@ -5,28 +5,42 @@ import android.hardware.SensorEvent;
 /**
  * Detects device shaking via accelerometer.
  * When shaking is detected, display should be frozen to prevent jitter.
+ *
+ * FIX: Initialize gravity to Earth gravity (0, 0, 9.8) instead of (0, 0, 0)
+ * to prevent false shake detection on startup.
  */
 public class ShakeDetector {
 
-    private static final float SHAKE_THRESHOLD = 25f; // m/s² (正常重力≈9.8，25≈2.5g 才判定抖动)
-    private static final long SETTLE_TIME_MS = 300; // 抖动停止后多久恢复
+    private static final float SHAKE_THRESHOLD = 25f; // m/s²
+    private static final long SETTLE_TIME_MS = 300;
 
     private long lastShakeTime = 0;
-    private long lastAccelTime = 0;
     private boolean shaking = false;
 
     // Low-pass filter for baseline gravity
-    private float gravityX = 0, gravityY = 0, gravityZ = 0;
+    // FIX: Initialize to Earth gravity to avoid false positives at startup
+    private float gravityX = 0f, gravityY = 0f, gravityZ = 9.8f;
     private static final float LP_ALPHA = 0.1f;
 
+    // Track whether we've received at least one sample
+    private boolean initialized = false;
+
     /**
-     * Process accelerometer data. Call in onSensorChanged for TYPE_ACCELEROMETER.
-     * @return true if device is currently shaking
+     * Process accelerometer data.
      */
     public boolean update(SensorEvent event) {
         float x = event.values[0];
         float y = event.values[1];
         float z = event.values[2];
+
+        // First sample: seed gravity directly
+        if (!initialized) {
+            gravityX = x;
+            gravityY = y;
+            gravityZ = z;
+            initialized = true;
+            return false;
+        }
 
         // Low-pass filter to get gravity baseline
         gravityX = LP_ALPHA * x + (1 - LP_ALPHA) * gravityX;
@@ -49,7 +63,6 @@ public class ShakeDetector {
             shaking = false;
         }
 
-        lastAccelTime = now;
         return shaking;
     }
 
@@ -57,9 +70,6 @@ public class ShakeDetector {
         return shaking;
     }
 
-    /**
-     * Get how long until settle (ms). 0 = already settled.
-     */
     public long getSettleRemainingMs() {
         if (!shaking) return 0;
         long elapsed = System.currentTimeMillis() - lastShakeTime;
@@ -69,6 +79,9 @@ public class ShakeDetector {
     public void reset() {
         shaking = false;
         lastShakeTime = 0;
-        gravityX = gravityY = gravityZ = 0;
+        gravityX = 0f;
+        gravityY = 0f;
+        gravityZ = 9.8f;
+        initialized = false;
     }
 }
