@@ -100,7 +100,9 @@ public class DistanceStats {
     /** Standard deviation over sliding window — O(1) via Welford. */
     public float getStdDev() {
         if (windowCount < 2) return 0;
-        return (float) Math.sqrt(runningM2 / windowCount);
+        // Guard: runningM2 can go slightly negative due to floating-point error
+        double m2 = Math.max(0, runningM2);
+        return (float) Math.sqrt(m2 / windowCount);
     }
 
     /** Median over sliding window — O(n log n) sort, only called on demand. */
