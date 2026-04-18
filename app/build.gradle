@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace 'com.example.tofranger'
-    compileSdk 34
+    namespace 'com.guocheng.tofranger'
+    compileSdk 35
 
     defaultConfig {
-        applicationId "com.example.tofranger"
+        applicationId "com.guocheng.tofranger"
         minSdk 28
         targetSdk 35
-        versionCode 5
-        versionName "3.0"
+        versionCode 6
+        versionName "3.1"
     }
 
     buildTypes {
